@@ -144,13 +144,6 @@ get_remote_host() {
 
   if [[ -n "$host" ]]; then
     log "Using saved host for ${system}: ${BOLD}${host}${RESET}"
-    read -r -p "    Press Enter to use '${host}', or type a new hostname: " override </dev/tty
-    override="${override%$'\r'}"
-    override="${override// /}"
-    if [[ -n "$override" ]]; then
-      host="$override"
-      save_host "$system" "$host"
-    fi
   else
     read -r -p "$(echo -e "${CYAN}${BOLD}==>${RESET} Enter hostname for ${system}: ")" host </dev/tty
     host="${host%$'\r'}"
