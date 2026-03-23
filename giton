@@ -183,13 +183,16 @@ if [[ -n "$CONFIG_FILE" ]]; then
   done
 
   # Generate process-compose config (JSON, which is valid YAML) from giton config
+  LOG_DIR="/tmp/giton-${SHA:0:12}-logs"
+  mkdir -p "$LOG_DIR"
+
   PC_FILE=$(mktemp /tmp/giton-pc-XXXXXX.json)
   cleanup_pc() { rm -f "$PC_FILE"; }
   trap cleanup_pc EXIT
 
   # Build process-compose config via jq.
   # Each step × system becomes a process; dependencies expand per-system.
-  jq --arg sha "$SHA" --arg bin "$0" --arg wd "$PWD" --argjson hosts "$HOST_MAP" '
+  jq --arg sha "$SHA" --arg bin "$0" --arg wd "$PWD" --arg logdir "$LOG_DIR" --argjson hosts "$HOST_MAP" '
     .steps as $steps |
     [ $steps | to_entries[] | .key as $step | .value as $cfg |
       ($cfg.systems // [null]) as $systems |
@@ -210,19 +213,23 @@ if [[ -n "$CONFIG_FILE" ]]; then
           { key: $dep_name, value: { condition: "process_completed_successfully" } }
         ] | from_entries | if length > 0 then . else null end
       ) as $depends |
+      ( $logdir + "/" + ($name | gsub("/"; "-")) + ".log" ) as $logfile |
       { key: $name, value: (
         { command: $command, working_dir: $wd,
+          log_location: $logfile,
           namespace: (if $sys then $hosts[$sys] // $sys else null end),
           availability: { restart: "exit_on_failure" } }
         + if $depends then { depends_on: $depends } else {} end
         | del(.namespace | nulls)
       )}
     ] | from_entries |
-    { version: "0.5", log_level: "fatal", processes: . }
+    { version: "0.5",
+      log_configuration: { flush_each_line: true },
+      processes: . }
   ' "$CONFIG_FILE" > "$PC_FILE"
 
   PC_EXIT=0
-  process-compose up --tui="$TUI" --config "$PC_FILE" || PC_EXIT=$?
+  process-compose up --tui="$TUI" --no-server --config "$PC_FILE" || PC_EXIT=$?
 
   # Print summary report
   echo "" >&2
@@ -230,11 +237,16 @@ if [[ -n "$CONFIG_FILE" ]]; then
     ok "All steps passed"
   else
     warn "One or more steps failed (exit ${PC_EXIT})"
-    # Show process-compose log for failed runs
-    PC_LOG="/tmp/process-compose-$(whoami).log"
-    if [[ -f "$PC_LOG" ]]; then
-      info "Log: ${PC_LOG}"
-    fi
+    info "Logs: ${LOG_DIR}/"
+    # Show log output for failed steps
+    for logfile in "$LOG_DIR"/*.log; do
+      [[ -s "$logfile" ]] || continue
+      grep -q "failed" "$logfile" || continue
+      stepname=$(basename "$logfile" .log)
+      echo "" >&2
+      warn "${BOLD}${stepname}${RESET}:"
+      jq -r '.message' "$logfile" >&2
+    done
   fi
   exit $PC_EXIT
 fi
