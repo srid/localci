@@ -192,28 +192,36 @@ if [[ -n "$CONFIG_FILE" ]]; then
 
   # Build process-compose config via jq.
   # Each step × system becomes a process; dependencies expand per-system.
+  # Process-compose keys: just the step name when only one system,
+  # "step (system)" when multiple systems for disambiguation.
   jq --arg sha "$SHA" --arg bin "$0" --arg wd "$PWD" --arg logdir "$LOG_DIR" --argjson hosts "$HOST_MAP" '
     .steps as $steps |
-    [ $steps | to_entries[] | .key as $step | .value as $cfg |
-      ($cfg.systems // [null]) as $systems |
-      ($cfg.depends_on // []) as $deps |
-      $systems[] as $sys |
-      ( if $sys then $step + "/" + $sys else $step end ) as $name |
+
+    # Build a lookup: for each step+system, what is the process key?
+    # Used for both naming and dependency resolution.
+    ( [ $steps | to_entries[] | .key as $step | .value as $cfg |
+        ($cfg.systems // [null]) as $systems |
+        $systems[] as $sys |
+        { step: $step, sys: $sys,
+          key: (if $sys == null then $step
+                elif ($systems | length) == 1 then $step
+                else $step + " (" + $sys + ")" end) }
+      ] ) as $procs |
+
+    [ $procs[] |
+      .step as $step | .sys as $sys | .key as $name |
+      ($steps[$step]) as $cfg |
       ( [$bin, "--sha", $sha]
         + (if $sys then ["-s", $sys] else [] end)
         + ["-n", $step, "--", $cfg.command] | join(" ")
       ) as $command |
+      ($cfg.depends_on // []) as $deps |
       ( [ $deps[] as $dep |
-          ( if $sys and ($steps[$dep].systems // [] | index($sys))
-            then $dep + "/" + $sys
-            elif ($sys | not) and ($steps[$dep].systems // [] | length) == 0
-            then $dep
-            else empty end
-          ) as $dep_name |
-          { key: $dep_name, value: { condition: "process_completed_successfully" } }
+          ( [ $procs[] | select(.step == $dep and .sys == $sys) ] | first // empty ) as $match |
+          { key: $match.key, value: { condition: "process_completed_successfully" } }
         ] | from_entries | if length > 0 then . else null end
       ) as $depends |
-      ( $logdir + "/" + ($name | gsub("/"; "-")) + ".log" ) as $logfile |
+      ( $logdir + "/" + ($name | gsub("[/ ()]"; "-") | gsub("--+"; "-") | gsub("-$"; "")) + ".log" ) as $logfile |
       { key: $name, value: (
         { command: $command, working_dir: $wd,
           log_location: $logfile,
