@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Colors (disabled if not a terminal)
+if [[ -t 2 ]]; then
+  BOLD='\033[1m'    DIM='\033[2m'
+  RED='\033[31m'    GREEN='\033[32m'
+  YELLOW='\033[33m' CYAN='\033[36m'
+  RESET='\033[0m'
+else
+  BOLD='' DIM='' RED='' GREEN='' YELLOW='' CYAN='' RESET=''
+fi
+
+log()   { echo -e "${CYAN}${BOLD}==>${RESET} $*" >&2; }
+info()  { echo -e "    ${DIM}$*${RESET}" >&2; }
+err()   { echo -e "${RED}${BOLD}Error:${RESET} $*" >&2; }
+ok()    { echo -e "${GREEN}${BOLD}==>${RESET} $*" >&2; }
+warn()  { echo -e "${YELLOW}${BOLD}==>${RESET} $*" >&2; }
+
 usage() {
   echo "Usage: giton [--system <nix-system>] [--name <check-name>] -- <command...>"
   echo ""
@@ -48,7 +64,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#CMD[@]} -eq 0 ]]; then
-  echo "Error: A command after -- is required."
+  err "A command after -- is required."
   usage
 fi
 
@@ -59,13 +75,13 @@ fi
 
 # Ensure we're in a git repo
 if ! git rev-parse --is-inside-work-tree &>/dev/null; then
-  echo "Error: Not inside a git repository."
+  err "Not inside a git repository."
   exit 1
 fi
 
 # Ensure working tree is clean
 if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "Error: Working tree is dirty. Commit or stash changes first."
+  err "Working tree is dirty. Commit or stash changes first."
   exit 1
 fi
 
@@ -81,14 +97,14 @@ fi
 # Get owner/repo from gh
 REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
 if [[ -z "$REPO" ]]; then
-  echo "Error: Could not determine GitHub repository. Is 'gh' authenticated?"
+  err "Could not determine GitHub repository. Is 'gh' authenticated?"
   exit 1
 fi
 
-echo "==> giton: ${CONTEXT}"
-echo "    repo:   ${REPO}"
-echo "    commit: ${SHA:0:12}"
-echo "    cmd:    ${CMD[*]}"
+log "giton: ${BOLD}${CONTEXT}${RESET}"
+info "repo:   ${REPO}"
+info "commit: ${SHA:0:12}"
+info "cmd:    ${CMD[*]}"
 
 # Post pending status
 post_status() {
@@ -101,7 +117,7 @@ post_status() {
     --silent
 }
 
-echo "==> Posting pending status..."
+log "Posting ${YELLOW}pending${RESET} status..."
 post_status "pending" "Running: ${CMD[*]}"
 
 # Determine if we need remote execution
@@ -127,16 +143,16 @@ get_remote_host() {
   fi
 
   if [[ -n "$host" ]]; then
-    echo "==> Using saved host for ${system}: ${host}" >&2
+    log "Using saved host for ${system}: ${BOLD}${host}${RESET}"
     read -r -p "    Press Enter to use '${host}', or type a new hostname: " override </dev/tty
     if [[ -n "$override" ]]; then
       host="$override"
       save_host "$system" "$host"
     fi
   else
-    read -r -p "==> Enter hostname for ${system}: " host </dev/tty
+    read -r -p "$(echo -e "${CYAN}${BOLD}==>${RESET} Enter hostname for ${system}: ")" host </dev/tty
     if [[ -z "$host" ]]; then
-      echo "Error: No hostname provided."
+      err "No hostname provided."
       exit 1
     fi
     save_host "$system" "$host"
@@ -163,15 +179,15 @@ if [[ "$REMOTE" == true ]]; then
   REMOTE_DIR="/tmp/giton-${SHA:0:12}"
 
   cleanup() {
-    echo "==> Cleaning up remote temp dir..."
+    log "Cleaning up remote temp dir..."
     ssh "$HOST" "rm -rf '$REMOTE_DIR'" 2>/dev/null || true
   }
   trap cleanup EXIT
 
-  echo "==> Copying repo to ${HOST}:${REMOTE_DIR}..."
+  log "Copying repo to ${BOLD}${HOST}${RESET}:${REMOTE_DIR}..."
   git archive --format=tar HEAD | ssh "$HOST" "mkdir -p '$REMOTE_DIR' && tar -C '$REMOTE_DIR' -x"
 
-  echo "==> Running on ${HOST}: ${CMD[*]}"
+  log "Running on ${BOLD}${HOST}${RESET}: ${CMD[*]}"
   EXIT_CODE=0
   ssh "$HOST" "cd '$REMOTE_DIR' && ${CMD[*]}" || EXIT_CODE=$?
 else
@@ -182,19 +198,19 @@ else
   }
   trap cleanup EXIT
 
-  echo "==> Extracting repo to ${TMPDIR}..."
+  log "Extracting repo to ${DIM}${TMPDIR}${RESET}..."
   git archive --format=tar HEAD | tar -C "$TMPDIR" -x
 
-  echo "==> Running: ${CMD[*]}"
+  log "Running: ${BOLD}${CMD[*]}${RESET}"
   EXIT_CODE=0
   (cd "$TMPDIR" && "${CMD[@]}") || EXIT_CODE=$?
 fi
 
 if [[ $EXIT_CODE -eq 0 ]]; then
-  echo "==> Command succeeded."
+  ok "Command succeeded. Posting ${GREEN}success${RESET} status."
   post_status "success" "Passed: ${CMD[*]}"
 else
-  echo "==> Command failed (exit code: ${EXIT_CODE})."
+  warn "Command failed (exit code: ${EXIT_CODE}). Posting ${RED}failure${RESET} status."
   post_status "failure" "Failed (exit ${EXIT_CODE}): ${CMD[*]}"
 fi
 
