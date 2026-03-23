@@ -2,29 +2,33 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: giton --system <nix-system> --name <check-name> -- <command...>"
+  echo "Usage: giton [--system <nix-system>] [--name <check-name>] -- <command...>"
   echo ""
   echo "Run a command on a specific Nix platform and post GitHub commit status."
   echo ""
   echo "Options:"
-  echo "  --system    Nix system string (e.g. x86_64-linux, aarch64-darwin)"
-  echo "  --name      Check name (used in GitHub status context)"
-  echo "  --          Separator before the command to run"
+  echo "  -s, --system    Nix system string (if omitted, runs on current system)"
+  echo "  -n, --name      Check name for GitHub status context (default: command name)"
+  echo "  --              Separator before the command to run"
+  echo ""
+  echo "Status context: giton/<name> (no --system) or giton/<name>/<system> (with --system)"
   exit 1
 }
 
 # Parse arguments
 SYSTEM=""
+SYSTEM_EXPLICIT=false
 NAME=""
 CMD=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --system)
+    -s|--system)
       SYSTEM="$2"
+      SYSTEM_EXPLICIT=true
       shift 2
       ;;
-    --name)
+    -n|--name)
       NAME="$2"
       shift 2
       ;;
@@ -43,9 +47,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$SYSTEM" || -z "$NAME" || ${#CMD[@]} -eq 0 ]]; then
-  echo "Error: --system, --name, and a command after -- are all required."
+if [[ ${#CMD[@]} -eq 0 ]]; then
+  echo "Error: A command after -- is required."
   usage
+fi
+
+# Default --name to first word of command
+if [[ -z "$NAME" ]]; then
+  NAME=$(basename "${CMD[0]}")
 fi
 
 # Ensure we're in a git repo
@@ -61,7 +70,13 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 SHA=$(git rev-parse HEAD)
-CONTEXT="giton/${SYSTEM}/${NAME}"
+
+# Build context: giton/<name> without --system, giton/<name>/<system> with
+if [[ "$SYSTEM_EXPLICIT" == true ]]; then
+  CONTEXT="giton/${NAME}/${SYSTEM}"
+else
+  CONTEXT="giton/${NAME}"
+fi
 
 # Get owner/repo from gh
 REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
@@ -89,15 +104,16 @@ post_status() {
 echo "==> Posting pending status..."
 post_status "pending" "Running: ${CMD[*]}"
 
-# Determine current system
-CURRENT_SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem)
-
-if [[ "$CURRENT_SYSTEM" != "$SYSTEM" ]]; then
-  echo "Error: Remote execution not yet implemented."
-  echo "       Current system: ${CURRENT_SYSTEM}"
-  echo "       Requested:      ${SYSTEM}"
-  post_status "error" "Remote execution not yet implemented"
-  exit 1
+# Check system match if --system was specified
+if [[ "$SYSTEM_EXPLICIT" == true ]]; then
+  CURRENT_SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem)
+  if [[ "$CURRENT_SYSTEM" != "$SYSTEM" ]]; then
+    echo "Error: Remote execution not yet implemented."
+    echo "       Current system: ${CURRENT_SYSTEM}"
+    echo "       Requested:      ${SYSTEM}"
+    post_status "error" "Remote execution not yet implemented"
+    exit 1
+  fi
 fi
 
 # Local execution: git archive to tmpdir
