@@ -221,7 +221,22 @@ if [[ -n "$CONFIG_FILE" ]]; then
     { version: "0.5", log_level: "fatal", processes: . }
   ' "$CONFIG_FILE" > "$PC_FILE"
 
-  exec process-compose up --tui="$TUI" --config "$PC_FILE"
+  PC_EXIT=0
+  process-compose up --tui="$TUI" --config "$PC_FILE" || PC_EXIT=$?
+
+  # Print summary report
+  echo "" >&2
+  if [[ $PC_EXIT -eq 0 ]]; then
+    ok "All steps passed"
+  else
+    warn "One or more steps failed (exit ${PC_EXIT})"
+    # Show process-compose log for failed runs
+    PC_LOG="/tmp/process-compose-$(whoami).log"
+    if [[ -f "$PC_LOG" ]]; then
+      info "Log: ${PC_LOG}"
+    fi
+  fi
+  exit $PC_EXIT
 fi
 
 # ─── Single-step mode ────────────────────────────────────────────────────────
