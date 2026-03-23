@@ -28,14 +28,21 @@ fmt_time() {
 }
 
 usage() {
-  echo "Usage: giton [--system <nix-system>] [--name <check-name>] -- <command...>"
+  echo "Usage: giton [options] -- <command...>"
+  echo "       giton -f <config.json>"
   echo ""
-  echo "Run a command on a specific Nix platform and post GitHub commit status."
+  echo "Run commands on Nix platforms and post GitHub commit statuses."
   echo ""
-  echo "Options:"
+  echo "Single-step mode:"
   echo "  -s, --system    Nix system string (if omitted, runs on current system)"
   echo "  -n, --name      Check name for GitHub status context (default: command name)"
   echo "  --              Separator before the command to run"
+  echo ""
+  echo "Multi-step mode:"
+  echo "  -f, --file      JSON config file defining steps, systems, and dependencies"
+  echo ""
+  echo "Common options:"
+  echo "  --sha           Pin to a specific commit SHA (skips clean-tree check)"
   echo ""
   echo "Status context: giton/<name> (no --system) or giton/<name>/<system> (with --system)"
   exit 1
@@ -46,6 +53,8 @@ SYSTEM=""
 SYSTEM_EXPLICIT=false
 NAME=""
 CMD=()
+SHA_PIN=""
+CONFIG_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -56,6 +65,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     -n|--name)
       NAME="$2"
+      shift 2
+      ;;
+    --sha)
+      SHA_PIN="$2"
+      shift 2
+      ;;
+    -f|--file)
+      CONFIG_FILE="$2"
       shift 2
       ;;
     --)
@@ -73,8 +90,124 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Ensure we're in a git repo
+if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+  err "Not inside a git repository."
+  exit 1
+fi
+
+# Pin SHA: use --sha if provided, otherwise resolve HEAD
+if [[ -n "$SHA_PIN" ]]; then
+  SHA="$SHA_PIN"
+else
+  # Ensure working tree is clean (only when resolving HEAD)
+  if ! git diff --quiet || ! git diff --cached --quiet || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+    err "Working tree is dirty. Commit or stash changes first."
+    exit 1
+  fi
+  SHA=$(git rev-parse HEAD)
+fi
+
+# ─── Multi-step mode ─────────────────────────────────────────────────────────
+
+if [[ -n "$CONFIG_FILE" ]]; then
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    err "Config file not found: $CONFIG_FILE"
+    exit 1
+  fi
+
+  log "Multi-step mode: ${BOLD}${CONFIG_FILE}${RESET}  ${DIM}SHA=${SHA:0:12}${RESET}"
+
+  # Generate process-compose YAML from giton config JSON
+  PC_FILE=$(mktemp /tmp/giton-pc-XXXXXX.yml)
+  cleanup_pc() { rm -f "$PC_FILE"; }
+  trap cleanup_pc EXIT
+
+  GITON_BIN="$0"
+
+  # Build process-compose config via jq
+  jq -r --arg sha "$SHA" --arg bin "$GITON_BIN" '
+    # Collect all step names and their systems for dependency resolution
+    .steps as $steps |
+
+    # For each step, expand into per-system processes
+    [ $steps | to_entries[] | .key as $step | .value as $cfg |
+      ($cfg.systems // []) as $systems |
+      ($cfg.depends_on // []) as $deps |
+      ($cfg.command) as $cmd |
+
+      # If no systems specified, create a single process without system suffix
+      if ($systems | length) == 0 then
+        [{
+          name: $step,
+          command: ([$bin, "--sha", $sha, "-n", $step, "--", $cmd] | join(" ")),
+          depends_on: (
+            if ($deps | length) > 0 then
+              [ $deps[] as $dep |
+                if ($steps[$dep].systems // [] | length) == 0 then
+                  { key: $dep, value: { condition: "process_completed_successfully" } }
+                else
+                  empty
+                end
+              ] | from_entries
+            else
+              null
+            end
+          )
+        }]
+      else
+        [ $systems[] as $sys |
+          {
+            name: ($step + "/" + $sys),
+            command: ([$bin, "--sha", $sha, "-s", $sys, "-n", $step, "--", $cmd] | join(" ")),
+            depends_on: (
+              if ($deps | length) > 0 then
+                [ $deps[] as $dep |
+                  # Only add dependency edge if the dep step includes this system
+                  if ($steps[$dep].systems // [] | index($sys)) then
+                    { key: ($dep + "/" + $sys), value: { condition: "process_completed_successfully" } }
+                  else
+                    empty
+                  end
+                ] | from_entries
+              else
+                null
+              end
+            )
+          }
+        ]
+      end
+    ] | flatten |
+
+    # Convert to process-compose YAML structure
+    "version: \"0.5\"\n" +
+    "log_level: \"fatal\"\n" +
+    "\nprocesses:\n" +
+    (map(
+      "  \"" + .name + "\":\n" +
+      "    command: " + (.command | @json) + "\n" +
+      if .depends_on != null and (.depends_on | length) > 0 then
+        "    depends_on:\n" +
+        ([.depends_on | to_entries[] |
+          "      \"" + .key + "\":\n" +
+          "        condition: " + .value.condition
+        ] | join("\n")) + "\n"
+      else
+        ""
+      end
+    ) | join(""))
+  ' "$CONFIG_FILE" > "$PC_FILE"
+
+  info "Generated process-compose config:"
+  cat "$PC_FILE" >&2
+
+  exec process-compose up --tui=false --config "$PC_FILE"
+fi
+
+# ─── Single-step mode ────────────────────────────────────────────────────────
+
 if [[ ${#CMD[@]} -eq 0 ]]; then
-  err "A command after -- is required."
+  err "A command after -- is required (or use -f for multi-step mode)."
   usage
 fi
 
@@ -82,20 +215,6 @@ fi
 if [[ -z "$NAME" ]]; then
   NAME=$(basename "${CMD[0]}")
 fi
-
-# Ensure we're in a git repo
-if ! git rev-parse --is-inside-work-tree &>/dev/null; then
-  err "Not inside a git repository."
-  exit 1
-fi
-
-# Ensure working tree is clean
-if ! git diff --quiet || ! git diff --cached --quiet || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
-  err "Working tree is dirty. Commit or stash changes first."
-  exit 1
-fi
-
-SHA=$(git rev-parse HEAD)
 
 # Build context: giton/<name> without --system, giton/<name>/<system> with
 if [[ "$SYSTEM_EXPLICIT" == true ]]; then
@@ -213,7 +332,7 @@ if [[ "$REMOTE" == true ]]; then
   fi
 
   log "Copying repo to ${BOLD}${HOST}${RESET}..."
-  git archive --format=tar HEAD | ssh "$HOST" "mkdir -p '$REMOTE_DIR' && tar -C '$REMOTE_DIR' -x"
+  git archive --format=tar "$SHA" | ssh "$HOST" "mkdir -p '$REMOTE_DIR' && tar -C '$REMOTE_DIR' -x"
 
   run_prefixed ssh "$HOST" "cd '$REMOTE_DIR' && ${CMD[*]}"
 else
@@ -225,7 +344,7 @@ else
   trap cleanup EXIT
 
   log "Extracting repo..."
-  git archive --format=tar HEAD | tar -C "$TMPDIR" -x
+  git archive --format=tar "$SHA" | tar -C "$TMPDIR" -x
 
   run_prefixed bash -c "cd '$TMPDIR' && $(printf '%q ' "${CMD[@]}")"
 fi
