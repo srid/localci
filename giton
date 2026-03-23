@@ -209,7 +209,7 @@ if [[ "$REMOTE" == true ]]; then
   git archive --format=tar HEAD | ssh "$HOST" "mkdir -p '$REMOTE_DIR' && tar -C '$REMOTE_DIR' -x"
 
   EXIT_CODE=0
-  { ssh "$HOST" "cd '$REMOTE_DIR' && ${CMD[*]}" 2>&1 || EXIT_CODE=$?; } > >(sed -u "s/^/${SED_PREFIX}/" >&2)
+  { ssh "$HOST" "cd '$REMOTE_DIR' && ${CMD[*]}" 2>&1 || EXIT_CODE=$?; } > >(sed -u $'s\x01^\x01'"${SED_PREFIX}"$'\x01' >&2)
 else
   # Local execution: git archive to tmpdir
   TMPDIR=$(mktemp -d "/tmp/giton-${SHA:0:12}-XXXXXX")
@@ -222,7 +222,7 @@ else
   git archive --format=tar HEAD | tar -C "$TMPDIR" -x
 
   EXIT_CODE=0
-  { (cd "$TMPDIR" && "${CMD[@]}") 2>&1 || EXIT_CODE=$?; } > >(sed -u "s/^/${SED_PREFIX}/" >&2)
+  { (cd "$TMPDIR" && "${CMD[@]}") 2>&1 || EXIT_CODE=$?; } > >(sed -u $'s\x01^\x01'"${SED_PREFIX}"$'\x01' >&2)
 fi
 
 ELAPSED=$(fmt_time $(( SECONDS - CMD_START )))
