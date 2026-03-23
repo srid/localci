@@ -7,8 +7,10 @@ if [[ -t 2 ]]; then
   RED='\033[31m'    GREEN='\033[32m'
   YELLOW='\033[33m' CYAN='\033[36m'
   RESET='\033[0m'
+  PIPE='│'
 else
   BOLD='' DIM='' RED='' GREEN='' YELLOW='' CYAN='' RESET=''
+  PIPE='|'
 fi
 
 log()   { echo -e "${CYAN}${BOLD}==>${RESET} $*" >&2; }
@@ -16,6 +18,14 @@ info()  { echo -e "    ${DIM}$*${RESET}" >&2; }
 err()   { echo -e "${RED}${BOLD}Error:${RESET} $*" >&2; }
 ok()    { echo -e "${GREEN}${BOLD}==>${RESET} $*" >&2; }
 warn()  { echo -e "${YELLOW}${BOLD}==>${RESET} $*" >&2; }
+
+fmt_time() {
+  local s=$1
+  if (( s >= 3600 )); then printf '%dh%02dm%02ds' $((s/3600)) $((s%3600/60)) $((s%60))
+  elif (( s >= 60 )); then printf '%dm%02ds' $((s/60)) $((s%60))
+  else printf '%ds' "$s"
+  fi
+}
 
 usage() {
   echo "Usage: giton [--system <nix-system>] [--name <check-name>] -- <command...>"
@@ -90,9 +100,14 @@ SHA=$(git rev-parse HEAD)
 # Build context: giton/<name> without --system, giton/<name>/<system> with
 if [[ "$SYSTEM_EXPLICIT" == true ]]; then
   CONTEXT="giton/${NAME}/${SYSTEM}"
+  OUTPUT_PREFIX="${NAME}/${SYSTEM}"
 else
   CONTEXT="giton/${NAME}"
+  OUTPUT_PREFIX="${NAME}"
 fi
+
+# Build sed prefix for command output
+SED_PREFIX="${DIM}${OUTPUT_PREFIX} ${PIPE}${RESET} "
 
 # Get owner/repo from gh
 REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
@@ -101,10 +116,8 @@ if [[ -z "$REPO" ]]; then
   exit 1
 fi
 
-log "giton: ${BOLD}${CONTEXT}${RESET}"
-info "repo:   ${REPO}"
-info "commit: ${SHA:0:12}"
-info "cmd:    ${CMD[*]}"
+log "${BOLD}${CONTEXT}${RESET}  ${DIM}${REPO}@${SHA:0:12}${RESET}"
+info "${CMD[*]}"
 
 # Post pending status
 post_status() {
@@ -119,7 +132,6 @@ post_status() {
     --silent
 }
 
-log "Posting ${YELLOW}pending${RESET} status..."
 post_status "pending" "Running: ${CMD[*]}"
 
 # Determine if we need remote execution
@@ -174,6 +186,8 @@ save_host() {
   fi
 }
 
+CMD_START=$SECONDS
+
 if [[ "$REMOTE" == true ]]; then
   # Remote execution
   HOST=$(get_remote_host "$SYSTEM")
@@ -191,12 +205,11 @@ if [[ "$REMOTE" == true ]]; then
     mkdir -p "$(dirname "$SSH_CONTROL_PATH")"
   fi
 
-  log "Copying repo to ${BOLD}${HOST}${RESET}:${REMOTE_DIR}..."
+  log "Copying repo to ${BOLD}${HOST}${RESET}..."
   git archive --format=tar HEAD | ssh "$HOST" "mkdir -p '$REMOTE_DIR' && tar -C '$REMOTE_DIR' -x"
 
-  log "Running on ${BOLD}${HOST}${RESET}: ${CMD[*]}"
   EXIT_CODE=0
-  ssh "$HOST" "cd '$REMOTE_DIR' && ${CMD[*]}" || EXIT_CODE=$?
+  { ssh "$HOST" "cd '$REMOTE_DIR' && ${CMD[*]}" 2>&1 || EXIT_CODE=$?; } > >(sed -u "s/^/${SED_PREFIX}/" >&2)
 else
   # Local execution: git archive to tmpdir
   TMPDIR=$(mktemp -d "/tmp/giton-${SHA:0:12}-XXXXXX")
@@ -205,20 +218,21 @@ else
   }
   trap cleanup EXIT
 
-  log "Extracting repo to ${DIM}${TMPDIR}${RESET}..."
+  log "Extracting repo..."
   git archive --format=tar HEAD | tar -C "$TMPDIR" -x
 
-  log "Running: ${BOLD}${CMD[*]}${RESET}"
   EXIT_CODE=0
-  (cd "$TMPDIR" && "${CMD[@]}") || EXIT_CODE=$?
+  { (cd "$TMPDIR" && "${CMD[@]}") 2>&1 || EXIT_CODE=$?; } > >(sed -u "s/^/${SED_PREFIX}/" >&2)
 fi
 
+ELAPSED=$(fmt_time $(( SECONDS - CMD_START )))
+
 if [[ $EXIT_CODE -eq 0 ]]; then
-  ok "Command succeeded. Posting ${GREEN}success${RESET} status."
-  post_status "success" "Passed: ${CMD[*]}"
+  ok "${BOLD}${CONTEXT}${RESET} passed in ${GREEN}${ELAPSED}${RESET}"
+  post_status "success" "Passed in ${ELAPSED}: ${CMD[*]}"
 else
-  warn "Command failed (exit code: ${EXIT_CODE}). Posting ${RED}failure${RESET} status."
-  post_status "failure" "Failed (exit ${EXIT_CODE}): ${CMD[*]}"
+  warn "${BOLD}${CONTEXT}${RESET} failed (exit ${EXIT_CODE}) in ${YELLOW}${ELAPSED}${RESET}"
+  post_status "failure" "Failed (exit ${EXIT_CODE}) in ${ELAPSED}: ${CMD[*]}"
 fi
 
 exit $EXIT_CODE
