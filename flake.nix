@@ -12,6 +12,7 @@
       perSystem = { pkgs, ... }: {
         packages.default = pkgs.writeShellApplication {
           name = "giton";
+          meta.description = "Local CI tool — run commands on Nix platforms with GitHub status reporting";
           runtimeInputs = [ pkgs.git pkgs.gh pkgs.nix ];
           excludeShellChecks = [ "SC2329" "SC2317" ];
           text = builtins.readFile ./giton;
