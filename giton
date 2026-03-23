@@ -110,6 +110,8 @@ info "cmd:    ${CMD[*]}"
 post_status() {
   local state="$1"
   local description="${2:-}"
+  # GitHub status API enforces a 140-char limit on description
+  description="${description:0:140}"
   gh api "repos/${REPO}/statuses/${SHA}" \
     -f state="$state" \
     -f context="$CONTEXT" \
