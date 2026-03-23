@@ -14,13 +14,13 @@ nix run github:srid/giton -- [-s <nix-system>] [-n <check-name>] -- <command...>
 # Build on current system (status: giton/nix)
 nix run github:srid/giton -- -- nix build
 
-# Build on a specific platform (status: giton/build/x86_64-linux)
-nix run github:srid/giton -- -s x86_64-linux -n build -- nix build
+# Build on a specific platform (status: giton/build/aarch64-darwin)
+nix run github:srid/giton -- -s aarch64-darwin -n build -- nix build
 ```
 
 ## What it does
 
-1. Validates that the git working tree is clean
+1. Validates that the git working tree is clean (staged, unstaged, and untracked files)
 2. Posts a **pending** GitHub commit status
 3. Extracts the repo at HEAD to a temp directory via `git archive`
 4. Runs the command in that clean checkout
@@ -29,7 +29,7 @@ nix run github:srid/giton -- -s x86_64-linux -n build -- nix build
 
 Status context: `giton/<name>` without `--system`, `giton/<name>/<system>` with it.
 
-If `--system` is specified and doesn't match the current host, remote execution via SSH is planned but not yet implemented.
+When `--system` doesn't match the current host, giton copies the repo to a remote machine via `git archive | ssh` and runs the command there. On first use it prompts for an SSH hostname; subsequent runs reuse the saved host from `$XDG_CONFIG_HOME/giton/hosts.json`.
 
 ## Install
 
@@ -40,4 +40,4 @@ nix run github:srid/giton -- --help
 ## Requirements
 
 - `git`, `gh` (authenticated), `nix`
-- Must be run inside a git repository with a GitHub remote
+- Must be run inside a clean git repository with a GitHub remote

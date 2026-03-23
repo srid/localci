@@ -13,8 +13,8 @@
         packages.default = pkgs.writeShellApplication {
           name = "giton";
           meta.description = "Local CI tool — run commands on Nix platforms with GitHub status reporting";
-          runtimeInputs = [ pkgs.git pkgs.gh pkgs.nix ];
-          excludeShellChecks = [ "SC2329" "SC2317" ];
+          runtimeInputs = [ pkgs.git pkgs.gh pkgs.nix pkgs.jq pkgs.openssh ];
+          excludeShellChecks = [ "SC2029" "SC2317" "SC2329" ];
           text = builtins.readFile ./giton;
         };
       };
