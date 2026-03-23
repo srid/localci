@@ -7,10 +7,8 @@ if [[ -t 2 ]]; then
   RED=$'\033[31m'    GREEN=$'\033[32m'
   YELLOW=$'\033[33m' CYAN=$'\033[36m'
   RESET=$'\033[0m'
-  PIPE='│'
 else
   BOLD='' DIM='' RED='' GREEN='' YELLOW='' CYAN='' RESET=''
-  PIPE='|'
 fi
 
 log()   { printf '%s\n' "${CYAN}${BOLD}==>${RESET} $*" >&2; }
@@ -182,9 +180,6 @@ else
   CONTEXT="giton/${NAME}"
 fi
 
-# Prefix for command output lines (context without "giton/" prefix)
-LINE_PREFIX="${DIM}${CONTEXT#giton/} ${PIPE}${RESET} "
-
 # Get owner/repo from gh
 REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
 if [[ -z "$REPO" ]]; then
@@ -262,13 +257,9 @@ save_host() {
   fi
 }
 
-# Run a command with stdout/stderr prefixed by LINE_PREFIX.
-# Sets EXIT_CODE (global) to the command's exit status.
-# Uses SOH (\x01) as sed delimiter to avoid clashing with / in context names.
-run_prefixed() {
+run_cmd() {
   EXIT_CODE=0
-  { "$@" 2>&1 || EXIT_CODE=$?; } > >(sed -u $'s\x01^\x01'"${LINE_PREFIX}"$'\x01' >&2)
-  wait
+  "$@" || EXIT_CODE=$?
 }
 
 CMD_START=$SECONDS
@@ -293,7 +284,7 @@ if [[ "$REMOTE" == true ]]; then
   log "Copying repo to ${BOLD}${HOST}${RESET}..."
   git archive --format=tar "$SHA" | ssh "$HOST" "mkdir -p '$REMOTE_DIR' && tar -C '$REMOTE_DIR' -x"
 
-  run_prefixed ssh "$HOST" "cd '$REMOTE_DIR' && ${CMD[*]}"
+  run_cmd ssh "$HOST" "cd '$REMOTE_DIR' && ${CMD[*]}"
 else
   # Local execution: git archive to tmpdir
   TMPDIR=$(mktemp -d "/tmp/giton-${SHA:0:12}-XXXXXX")
@@ -305,7 +296,7 @@ else
   log "Extracting repo..."
   git archive --format=tar "$SHA" | tar -C "$TMPDIR" -x
 
-  run_prefixed bash -c "cd '$TMPDIR' && $(printf '%q ' "${CMD[@]}")"
+  run_cmd bash -c "cd '$TMPDIR' && $(printf '%q ' "${CMD[@]}")"
 fi
 
 ELAPSED=$(fmt_time $(( SECONDS - CMD_START )))
