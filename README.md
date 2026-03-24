@@ -124,7 +124,7 @@ Use the localci MCP tools (mcp__localci__<step>) — never run build or test com
 4. Once green: push, then run localci MCP tools again to post GitHub statuses
 ```
 
-Each step from `localci.json` appears as an MCP tool (named `mcp__localci__<step>`). Dependencies are respected — invoking a step auto-starts its dependencies first. Steps can be re-invoked after fixing code. Step logs are exposed as MCP resources (named `<step> logs`) for failure diagnosis.
+Each step from `localci.json` appears as an MCP tool (named `mcp__localci__<step>`). Dependencies are respected — invoking a step auto-starts its dependencies first. Steps can be re-invoked after fixing code. Each tool invocation returns the full step output directly.
 
 > [!IMPORTANT]
 > The MCP server reads `localci.json` once at startup. If you change the steps, restart your MCP client (e.g. Claude Code) to pick up the new config. Code changes are always tested fresh — each invocation resolves HEAD at runtime.
