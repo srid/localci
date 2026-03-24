@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "localci": {
+      "command": "nix",
+      "args": ["run", ".#default", "--", "--mcp", "--sha", "HEAD", "-f", "localci.json"]
+    }
+  }
+}
