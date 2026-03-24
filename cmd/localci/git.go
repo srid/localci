@@ -26,7 +26,12 @@ func isTreeClean() bool {
 }
 
 func resolveHEAD() (string, error) {
-	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	return resolveRef("HEAD")
+}
+
+// resolveRef resolves a git ref (SHA, branch, HEAD, etc.) to a full SHA.
+func resolveRef(ref string) (string, error) {
+	out, err := exec.Command("git", "rev-parse", ref).Output()
 	if err != nil {
 		return "", err
 	}

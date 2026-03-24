@@ -12,6 +12,24 @@ import (
 )
 
 func main() {
+	// Handle subcommands before flag parsing
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "protect":
+			// Re-parse flags after "protect" subcommand
+			os.Args = append(os.Args[:1], os.Args[2:]...)
+			args := parseArgs()
+			if args.configFile == "" {
+				logErr("protect requires -f <config.json>")
+				os.Exit(1)
+			}
+			os.Exit(runProtect(args))
+		case "run":
+			// "localci run" is the same as "localci" — strip "run"
+			os.Args = append(os.Args[:1], os.Args[2:]...)
+		}
+	}
+
 	args := parseArgs()
 
 	if !isInGitRepo() {
@@ -24,7 +42,13 @@ func main() {
 	// each step, since the repo is already extracted to a temp dir.
 	var sha string
 	if args.shaPin != "" {
-		sha = args.shaPin
+		// Resolve symbolic refs (e.g. "HEAD") to full SHA for GitHub API
+		resolved, err := resolveRef(args.shaPin)
+		if err != nil {
+			sha = args.shaPin // fall back to literal if resolution fails
+		} else {
+			sha = resolved
+		}
 	} else {
 		if !isTreeClean() {
 			logErr("Working tree is dirty. Commit or stash changes first.")
@@ -59,6 +83,8 @@ type cliArgs struct {
 	shaPin         string
 	configFile     string
 	tui            bool
+	mcp            bool
+	noSignoff      bool
 	workdir        string // pre-extracted dir, set by multi-step self-invocation
 }
 
@@ -70,11 +96,14 @@ func parseArgs() cliArgs {
 	flag.StringVar(&a.shaPin, "sha", "", "Pin to a specific commit SHA (skips clean-tree check)")
 	flag.StringVarP(&a.configFile, "file", "f", "", "JSON config file defining steps, systems, and dependencies")
 	flag.BoolVar(&a.tui, "tui", false, "Enable process-compose TUI (multi-step mode only)")
+	flag.BoolVar(&a.mcp, "mcp", false, "Expose steps as MCP tools via process-compose (multi-step mode only)")
+	flag.BoolVar(&a.noSignoff, "no-signoff", false, "Skip GitHub status posting (test locally before pushing)")
 	flag.StringVar(&a.workdir, "workdir", "", "Pre-extracted working directory (internal, used by multi-step mode)")
 
 	flag.Usage = func() {
-		logErr("Usage: localci [options] -- <command...>")
-		logErr("       localci -f <config.json>")
+		logErr("Usage: localci [run] [options] -- <command...>")
+		logErr("       localci [run] -f <config.json>")
+		logErr("       localci protect -f <config.json>")
 		logErr("")
 		flag.PrintDefaults()
 	}

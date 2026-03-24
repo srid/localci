@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // StepConfig represents a step in the multi-step config file (localci.json).
@@ -29,7 +31,12 @@ type MultiStepConfig struct {
 type pcConfig struct {
 	Version          string               `json:"version"`
 	LogConfiguration pcLogConfig          `json:"log_configuration"`
+	MCPServer        *pcMCPServer         `json:"mcp_server,omitempty"`
 	Processes        map[string]pcProcess `json:"processes"`
+}
+
+type pcMCPServer struct {
+	Transport string `json:"transport"`
 }
 
 type pcLogConfig struct {
@@ -41,8 +48,14 @@ type pcProcess struct {
 	WorkingDir   string                    `json:"working_dir"`
 	LogLocation  string                    `json:"log_location"`
 	Namespace    string                    `json:"namespace,omitempty"`
-	Availability pcAvailability            `json:"availability"`
+	Availability *pcAvailability           `json:"availability,omitempty"`
 	DependsOn    map[string]pcDependency   `json:"depends_on,omitempty"`
+	Disabled     bool                      `json:"disabled,omitempty"`
+	MCP          *pcMCP                    `json:"mcp,omitempty"`
+}
+
+type pcMCP struct {
+	Type string `json:"type"`
 }
 
 type pcAvailability struct {
@@ -106,30 +119,36 @@ func runMultiStep(args cliArgs, sha string) int {
 		}
 	}
 
-	// Pre-extract repo once per system
-	workdirBase := fmt.Sprintf("/tmp/localci-%s", shortSHA(sha))
 	workdirMap := make(map[string]string)
+	var localDir string
 
-	// Local
-	localDir := workdirBase + "-local"
-	logMsg("Extracting repo (local)...")
-	if err := extractRepoLocal(sha, localDir); err != nil {
-		logErr("Failed to extract repo locally: %v", err)
-		return 1
-	}
-	workdirMap[currentSystem] = localDir
+	if args.mcp {
+		// MCP mode: skip pre-extraction. Each tool invocation resolves HEAD
+		// fresh and extracts its own archive. This ensures agents always run
+		// against the current commit, not a stale one from server startup.
+	} else {
+		// Normal mode: pre-extract repo once per system for efficiency
+		workdirBase := fmt.Sprintf("/tmp/localci-%s", shortSHA(sha))
 
-	// Remote systems
-	for _, sys := range allSystems {
-		if sys != currentSystem {
-			host := hostMap[sys]
-			rdir := fmt.Sprintf("%s-%s", workdirBase, sys)
-			logMsg("Extracting repo on %s (%s)...", cBold(host), sys)
-			if err := extractRepoRemote(sha, host, rdir); err != nil {
-				logErr("Failed to extract repo on %s: %v", host, err)
-				return 1
+		localDir = workdirBase + "-local"
+		logMsg("Extracting repo (local)...")
+		if err := extractRepoLocal(sha, localDir); err != nil {
+			logErr("Failed to extract repo locally: %v", err)
+			return 1
+		}
+		workdirMap[currentSystem] = localDir
+
+		for _, sys := range allSystems {
+			if sys != currentSystem {
+				host := hostMap[sys]
+				rdir := fmt.Sprintf("%s-%s", workdirBase, sys)
+				logMsg("Extracting repo on %s (%s)...", cBold(host), sys)
+				if err := extractRepoRemote(sha, host, rdir); err != nil {
+					logErr("Failed to extract repo on %s: %v", host, err)
+					return 1
+				}
+				workdirMap[sys] = rdir
 			}
-			workdirMap[sys] = rdir
 		}
 	}
 
@@ -147,7 +166,7 @@ func runMultiStep(args cliArgs, sha string) int {
 	}
 
 	// Generate process-compose config
-	pcCfg := generatePCConfig(procs, config, sha, self, cwd, logDir, hostMap, workdirMap)
+	pcCfg := generatePCConfig(procs, config, sha, self, cwd, logDir, hostMap, workdirMap, args.mcp, args.noSignoff)
 
 	// Write process-compose config to temp file
 	pcFile, err := os.CreateTemp("", "localci-pc-*.json")
@@ -165,34 +184,63 @@ func runMultiStep(args cliArgs, sha string) int {
 	}
 	pcFile.Close()
 
-	// Cleanup function
-	defer func() {
-		os.RemoveAll(localDir)
-		for _, sys := range allSystems {
-			if sys != currentSystem {
-				host := hostMap[sys]
-				rdir := fmt.Sprintf("%s-%s", workdirBase, sys)
-				exec.Command("ssh", host, "rm -rf '"+rdir+"'").Run()
+	// Cleanup (skip in MCP mode — no pre-extraction to clean up)
+	if !args.mcp {
+		workdirBase := fmt.Sprintf("/tmp/localci-%s", shortSHA(sha))
+		defer func() {
+			os.RemoveAll(localDir)
+			for _, sys := range allSystems {
+				if sys != currentSystem {
+					host := hostMap[sys]
+					rdir := fmt.Sprintf("%s-%s", workdirBase, sys)
+					exec.Command("ssh", host, "rm -rf '"+rdir+"'").Run()
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	// Run process-compose
-	pcCmd := exec.Command("process-compose", "up",
-		"--tui="+strconv.FormatBool(args.tui), "--no-server", "--config", pcFile.Name())
+	pcArgs := []string{"up", "--config", pcFile.Name()}
+	if args.mcp {
+		// MCP mode: stdio transport. --no-server disables the HTTP API
+		// (which would conflict on port 8080); MCP uses stdio instead.
+		pcArgs = append(pcArgs, "--tui=false", "--no-server")
+	} else {
+		pcArgs = append(pcArgs, "--tui="+strconv.FormatBool(args.tui), "--no-server")
+	}
+	pcCmd := exec.Command("process-compose", pcArgs...)
 	pcCmd.Stdout = os.Stdout
 	pcCmd.Stderr = os.Stderr
-	pcExit := exitCode(pcCmd.Run())
+	pcCmd.Stdin = os.Stdin
+	// Run in its own process group so we can signal it cleanly
+	pcCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := pcCmd.Start(); err != nil {
+		logErr("Failed to start process-compose: %v", err)
+		return 1
+	}
+	// Forward SIGINT/SIGTERM to the process-compose process group
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		if pcCmd.Process != nil {
+			syscall.Kill(-pcCmd.Process.Pid, sig.(syscall.Signal))
+		}
+	}()
+	pcExit := exitCode(pcCmd.Wait())
+	signal.Stop(sigCh)
 
-	// Print summary
-	fmt.Fprintln(os.Stderr)
-	if pcExit == 0 {
-		logOk("All steps passed")
-	} else {
-		logWarn("One or more steps failed (exit %d)", pcExit)
-		logInfo("Logs: %s/", logDir)
-		if !args.tui {
-			printFailedLogs(logDir)
+	// Print summary (skip in MCP mode — agent reads structured MCP responses)
+	if !args.mcp {
+		fmt.Fprintln(os.Stderr)
+		if pcExit == 0 {
+			logOk("All steps passed")
+		} else {
+			logWarn("One or more steps failed (exit %d)", pcExit)
+			logInfo("Logs: %s/", logDir)
+			if !args.tui {
+				printFailedLogs(logDir)
+			}
 		}
 	}
 
@@ -242,17 +290,30 @@ func generatePCConfig(
 	procs []processEntry, config MultiStepConfig,
 	sha, self, cwd, logDir string,
 	hostMap, workdirMap map[string]string,
+	mcpMode, noSignoff bool,
 ) pcConfig {
 	processes := make(map[string]pcProcess)
 
 	for _, p := range procs {
 		step := config.Steps[p.step]
 
-		cmdParts := []string{self, "--sha", sha}
+		// In MCP mode, use "HEAD" so each invocation resolves the current
+		// commit fresh. In normal mode, use the pre-resolved SHA with
+		// --workdir for efficiency.
+		stepSHA := sha
+		if mcpMode {
+			stepSHA = "HEAD"
+		}
+		cmdParts := []string{self, "--sha", stepSHA}
+		if noSignoff {
+			cmdParts = append(cmdParts, "--no-signoff")
+		}
 		if p.sys != "" {
 			cmdParts = append(cmdParts, "-s", p.sys)
-			if dir, ok := workdirMap[p.sys]; ok {
-				cmdParts = append(cmdParts, "--workdir", dir)
+			if !mcpMode {
+				if dir, ok := workdirMap[p.sys]; ok {
+					cmdParts = append(cmdParts, "--workdir", dir)
+				}
 			}
 		}
 		cmdParts = append(cmdParts, "-n", p.step, "--", step.Command)
@@ -275,8 +336,12 @@ func generatePCConfig(
 			Command:      strings.Join(cmdParts, " "),
 			WorkingDir:   cwd,
 			LogLocation:  filepath.Join(logDir, sanitizeLogName(p.key)+".log"),
-			Availability: pcAvailability{Restart: "exit_on_failure"},
+			Availability: &pcAvailability{Restart: "exit_on_failure"},
 			DependsOn:    depends,
+		}
+		if mcpMode {
+			proc.Disabled = true
+			proc.MCP = &pcMCP{Type: "tool"}
 		}
 		if p.sys != "" {
 			hostname := hostMap[p.sys]
@@ -287,13 +352,28 @@ func generatePCConfig(
 		}
 
 		processes[p.key] = proc
+
+		// In MCP mode, add a companion resource to read each step's log file
+		if mcpMode {
+			logFile := filepath.Join(logDir, sanitizeLogName(p.key)+".log")
+			processes[p.key+" logs"] = pcProcess{
+				Command:    fmt.Sprintf("cat '%s' 2>/dev/null || echo 'No logs yet (step has not run)'", logFile),
+				WorkingDir: cwd,
+				Disabled:   true,
+				MCP:        &pcMCP{Type: "resource"},
+			}
+		}
 	}
 
-	return pcConfig{
+	cfg := pcConfig{
 		Version:          "0.5",
 		LogConfiguration: pcLogConfig{FlushEachLine: true},
 		Processes:        processes,
 	}
+	if mcpMode {
+		cfg.MCPServer = &pcMCPServer{Transport: "stdio"}
+	}
+	return cfg
 }
 
 var logNameReplacer = strings.NewReplacer("/", "-", " ", "-", "(", "-", ")", "-")

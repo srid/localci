@@ -58,6 +58,9 @@ Under the hood, localci generates a [process-compose](https://github.com/F1bonac
 
 ## GitHub Actions
 
+> [!NOTE]
+> Running localci in GitHub Actions defeats the purpose of *local* CI — you're back to waiting for hosted runners. Consider using the [MCP integration](#agent-integration-mcp) with a coding agent instead. That said, nothing prevents you from using both.
+
 localci works in hosted CI too. Use `--sha` to pin to the PR commit (the clean-tree check doesn't apply in CI since there's no working tree to protect):
 
 ```yaml
@@ -77,11 +80,69 @@ jobs:
 
 Each step posts its own commit status (`localci/build`, `localci/test`), so the PR shows fine-grained check results even though it's a single CI job.
 
+## Agent integration (MCP)
+
+localci can expose CI steps as [MCP](https://modelcontextprotocol.io/) tools via process-compose's built-in MCP server. Coding agents (Claude Code, etc.) connect over stdio and invoke steps individually.
+
+### Setup
+
+Add two files to your project root:
+
+**`localci.json`** — define your CI steps:
+```json
+{
+  "steps": {
+    "build": { "command": "nix build" },
+    "test": { "command": "nix run .#test", "depends_on": ["build"] }
+  }
+}
+```
+
+**`.mcp.json`** — register the MCP server (auto-loaded by Claude Code):
+```json
+{
+  "mcpServers": {
+    "localci": {
+      "type": "stdio",
+      "command": "nix",
+      "args": ["run", "github:srid/localci", "--", "--mcp", "-f", "localci.json"]
+    }
+  }
+}
+```
+
+Then in your project's `CLAUDE.md`, tell the agent how to use it:
+
+```markdown
+# Dev workflow
+
+Use the localci MCP tools (mcp__localci__<step>) — never run build or test commands directly.
+
+1. Make changes, commit
+2. Run localci MCP tools to verify
+3. If failures: fix, amend commit, re-run MCP tools
+4. Once green: push, then run localci MCP tools again to post GitHub statuses
+```
+
+Each step from `localci.json` appears as an MCP tool (named `mcp__localci__<step>`). Dependencies are respected — invoking a step auto-starts its dependencies first. Steps can be re-invoked after fixing code. Step logs are exposed as MCP resources (named `<step> logs`) for failure diagnosis.
+
+> [!IMPORTANT]
+> The MCP server reads `localci.json` once at startup. If you change the steps, restart your MCP client (e.g. Claude Code) to pick up the new config. Code changes are always tested fresh — each invocation resolves HEAD at runtime.
+
+### Branch protection
+
+Require localci checks to pass before merging PRs. This reads `localci.json`, expands the step×system matrix, and sets the correct status contexts as required checks on the default branch:
+
+```bash
+localci protect -f localci.json
+```
+
 ## Reference
 
 ```
-localci [options] -- <command...>    Single-step mode
-localci -f <config.json>             Multi-step mode
+localci [run] [options] -- <command...>    Single-step mode
+localci [run] -f <config.json>             Multi-step mode
+localci protect -f <config.json>           Set branch protection
 
 Options:
   -s, --system <system>   Nix system to run on (remote if different from current host)
@@ -89,6 +150,8 @@ Options:
   -f, --file <path>       Multi-step JSON config
   --sha <sha>             Pin to a commit SHA (skips clean-tree check)
   --tui                   Show process-compose TUI (multi-step only)
+  --mcp                   Expose steps as MCP tools (multi-step only)
+  --no-signoff            Skip GitHub status posting (test before pushing)
 ```
 
 Requires `git`, [`gh`](https://cli.github.com/) (authenticated), and `nix`. Must be run inside a git repository with a GitHub remote.
