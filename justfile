@@ -1,9 +1,9 @@
 default:
     @just --list
 
-# Run local CI
+# Run local CI (build + test with GitHub status reporting)
 ci:
-    nix run github:srid/giton -- -n nix -- nix build
+    nix run . -- -f giton.json
 
 # Run integration tests
 test:

@@ -1,0 +1,6 @@
+{
+  "steps": {
+    "build": { "command": "nix build" },
+    "test": { "command": "nix run .#test", "depends_on": ["build"] }
+  }
+}

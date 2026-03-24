@@ -68,6 +68,36 @@ Status context: `giton/<name>` without `--system`, `giton/<name>/<system>` with 
 
 When `--system` doesn't match the current host, giton copies the repo to a remote machine via `git archive | ssh` and runs the command there. On first use it prompts for an SSH hostname; subsequent runs reuse the saved host from `$XDG_CONFIG_HOME/giton/hosts.json`.
 
+## GitHub Actions
+
+giton can dogfood itself in CI — each step gets a commit status on the PR. Define your steps in a JSON config:
+
+```json
+{
+  "steps": {
+    "build": { "command": "nix build" },
+    "test": { "command": "nix run .#test", "depends_on": ["build"] }
+  }
+}
+```
+
+```yaml
+jobs:
+  ci:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nixbuild/nix-quick-install-action@v34
+      - run: nix run github:srid/giton -- --sha ${{ github.sha }} -f giton.json
+```
+
+`--sha` pins to the PR commit (skipping the clean-tree check that doesn't apply in CI). `GH_TOKEN` gives `gh` the credentials to post statuses. Each step shows up as `giton/build` and `giton/test` in the PR checks.
+
 ## Install
 
 ```bash

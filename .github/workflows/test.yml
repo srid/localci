@@ -15,5 +15,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: nixbuild/nix-quick-install-action@v34
-      - run: nix run . -- --sha ${{ github.sha }} -n build -- nix build
-      - run: nix run . -- --sha ${{ github.sha }} -n test -- nix run .#test
+      - run: nix run . -- --sha ${{ github.sha }} -f giton.json
