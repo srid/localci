@@ -127,10 +127,14 @@ func runLocal(dir string, cmdArgs []string) int {
 }
 
 // runSSH executes a command on a remote host via SSH.
+// -tt forces PTY allocation so the remote process gets SIGHUP when
+// the SSH connection drops (e.g. Ctrl+C killing the local process).
+// Without this, remote nix builds become orphans.
 func runSSH(host, dir string, cmdArgs []string) int {
-	cmd := exec.Command("ssh", host, fmt.Sprintf("cd '%s' && %s", dir, strings.Join(cmdArgs, " ")))
+	cmd := exec.Command("ssh", "-tt", host, fmt.Sprintf("cd '%s' && %s", dir, strings.Join(cmdArgs, " ")))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
 	return exitCode(cmd.Run())
 }
 
