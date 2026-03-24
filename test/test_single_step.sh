@@ -1,7 +1,7 @@
 # Single-step mode tests
 
 # Basic command succeeds
-run_giton --sha "$SHA" -n test -- echo hello
+run_localci --sha "$SHA" -n test -- echo hello
 if [[ $RC -eq 0 ]] && echo "$OUT" | grep -q "hello"; then
   pass "basic command succeeds and shows output"
 else
@@ -9,7 +9,7 @@ else
 fi
 
 # Command failure propagates exit code
-run_giton --sha "$SHA" -n test -- false
+run_localci --sha "$SHA" -n test -- false
 if [[ $RC -ne 0 ]]; then
   pass "command failure propagates exit code"
 else
@@ -18,15 +18,15 @@ fi
 
 # Default --name to command basename
 true > "$GH_CALL_LOG"
-run_giton --sha "$SHA" -- echo hello
-if grep -q "giton/echo" "$GH_CALL_LOG"; then
+run_localci --sha "$SHA" -- echo hello
+if grep -q "localci/echo" "$GH_CALL_LOG"; then
   pass "--name defaults to command basename"
 else
   fail "--name defaults to command basename"
 fi
 
 # Missing command shows error
-run_giton --sha "$SHA"
+run_localci --sha "$SHA"
 if [[ $RC -ne 0 ]]; then
   pass "missing command exits with error"
 else
@@ -35,7 +35,7 @@ fi
 
 # Not in git repo
 cd /tmp
-run_giton --sha "$SHA" -n test -- echo hello
+run_localci --sha "$SHA" -n test -- echo hello
 if [[ $RC -ne 0 ]] && echo "$OUT" | grep -qi "git repository"; then
   pass "not in git repo fails"
 else

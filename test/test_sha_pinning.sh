@@ -2,7 +2,7 @@
 
 # --sha skips dirty tree check
 echo "dirty" > "$TEST_REPO/untracked.txt"
-run_giton --sha "$SHA" -n test -- echo works
+run_localci --sha "$SHA" -n test -- echo works
 if [[ $RC -eq 0 ]]; then
   pass "--sha skips dirty tree check"
 else
@@ -12,7 +12,7 @@ rm -f "$TEST_REPO/untracked.txt"
 
 # Without --sha, dirty tree fails
 echo "dirty" > "$TEST_REPO/untracked.txt"
-run_giton -n test -- echo should-fail
+run_localci -n test -- echo should-fail
 if [[ $RC -ne 0 ]] && echo "$OUT" | grep -qi "dirty"; then
   pass "dirty tree fails without --sha"
 else
@@ -26,7 +26,7 @@ git add marker.txt
 git commit -q -m "add marker"
 NEW_SHA=$(git rev-parse HEAD)
 echo "modified-after-commit" > "$TEST_REPO/marker.txt"
-run_giton --sha "$NEW_SHA" -n test -- cat marker.txt
+run_localci --sha "$NEW_SHA" -n test -- cat marker.txt
 if [[ $RC -eq 0 ]] && echo "$OUT" | grep -q "marker-from-working-tree"; then
   pass "command runs in archived repo (committed content)"
 else

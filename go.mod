@@ -1,4 +1,4 @@
-module github.com/srid/giton
+module github.com/srid/localci
 
 go 1.25.7
 

@@ -1,4 +1,4 @@
-// giton — local CI tool that runs commands on Nix platforms and posts
+// localci — local CI tool that runs commands on Nix platforms and posts
 // GitHub commit statuses. Two modes: single-step (-- <cmd>) runs one
 // command; multi-step (-f config.json) orchestrates parallel steps via
 // process-compose. When --system differs from the current host, commands
@@ -73,8 +73,8 @@ func parseArgs() cliArgs {
 	flag.StringVar(&a.workdir, "workdir", "", "Pre-extracted working directory (internal, used by multi-step mode)")
 
 	flag.Usage = func() {
-		logErr("Usage: giton [options] -- <command...>")
-		logErr("       giton -f <config.json>")
+		logErr("Usage: localci [options] -- <command...>")
+		logErr("       localci -f <config.json>")
 		logErr("")
 		flag.PrintDefaults()
 	}

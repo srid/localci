@@ -8,7 +8,7 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Shared setup (sourced by each test file) ─────────────────────────────────
 
-export GITON="${GITON:-bash ./giton}"
+export LOCALCI="${LOCALCI:-bash ./giton}"
 export WORK=$(mktemp -d)
 ORIG_DIR="$PWD"
 cleanup() { cd "$ORIG_DIR"; rm -rf "$WORK"; }
@@ -57,14 +57,14 @@ green() { printf '\033[32m%s\033[0m\n' "$*"; }
 pass() { PASS=$((PASS + 1)); green "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); red   "  FAIL: $1"; }
 
-run_giton() {
+run_localci() {
   set +e
-  OUT=$($GITON "$@" 2>&1)
+  OUT=$($LOCALCI "$@" 2>&1)
   RC=$?
   set -e
 }
 
-export -f red green pass fail run_giton
+export -f red green pass fail run_localci
 
 # ── Run test files ───────────────────────────────────────────────────────────
 

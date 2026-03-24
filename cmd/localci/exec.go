@@ -22,9 +22,9 @@ func runSingleStep(args cliArgs, sha string) int {
 	// Status context: "giton/<name>" without --system, "giton/<name>/<system>" with
 	var context string
 	if args.systemExplicit {
-		context = fmt.Sprintf("giton/%s/%s", name, args.system)
+		context = fmt.Sprintf("localci/%s/%s", name, args.system)
 	} else {
-		context = fmt.Sprintf("giton/%s", name)
+		context = fmt.Sprintf("localci/%s", name)
 	}
 
 	repo, err := getRepo()
@@ -65,7 +65,7 @@ func runSingleStep(args cliArgs, sha string) int {
 			logErr("%v", err)
 			return 1
 		}
-		remoteDir := fmt.Sprintf("/tmp/giton-%s", shortSHA(sha))
+		remoteDir := fmt.Sprintf("/tmp/localci-%s", shortSHA(sha))
 		defer cleanupRemote(host, remoteDir)
 
 		ensureSSHControlDir(host)

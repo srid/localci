@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-// StepConfig represents a step in the multi-step config file (giton.json).
+// StepConfig represents a step in the multi-step config file (localci.json).
 // Each step has a command and optionally targets specific Nix systems.
 type StepConfig struct {
 	Command   string   `json:"command"`
@@ -63,7 +63,7 @@ type processEntry struct {
 // runMultiStep reads a JSON config defining steps (with optional systems and
 // dependencies), resolves remote hosts, extracts the repo to each target,
 // generates a process-compose config, and runs all steps in parallel.
-// Each step self-invokes giton in single-step mode with --sha pinning.
+// Each step self-invokes localci in single-step mode with --sha pinning.
 func runMultiStep(args cliArgs, sha string) int {
 	data, err := os.ReadFile(args.configFile)
 	if err != nil {
@@ -107,7 +107,7 @@ func runMultiStep(args cliArgs, sha string) int {
 	}
 
 	// Pre-extract repo once per system
-	workdirBase := fmt.Sprintf("/tmp/giton-%s", shortSHA(sha))
+	workdirBase := fmt.Sprintf("/tmp/localci-%s", shortSHA(sha))
 	workdirMap := make(map[string]string)
 
 	// Local
@@ -133,7 +133,7 @@ func runMultiStep(args cliArgs, sha string) int {
 		}
 	}
 
-	logDir := fmt.Sprintf("/tmp/giton-%s-logs", shortSHA(sha))
+	logDir := fmt.Sprintf("/tmp/localci-%s-logs", shortSHA(sha))
 	os.MkdirAll(logDir, 0o755)
 
 	// Build process entries (step × system matrix)
@@ -150,7 +150,7 @@ func runMultiStep(args cliArgs, sha string) int {
 	pcCfg := generatePCConfig(procs, config, sha, self, cwd, logDir, hostMap, workdirMap)
 
 	// Write process-compose config to temp file
-	pcFile, err := os.CreateTemp("", "giton-pc-*.json")
+	pcFile, err := os.CreateTemp("", "localci-pc-*.json")
 	if err != nil {
 		logErr("Failed to create temp file: %v", err)
 		return 1
@@ -235,7 +235,7 @@ func buildProcessEntries(config MultiStepConfig) []processEntry {
 }
 
 // generatePCConfig builds the process-compose JSON config. Each process
-// is a self-invocation of giton in single-step mode with --sha pinning.
+// is a self-invocation of localci in single-step mode with --sha pinning.
 // Dependencies are resolved per-system: step B on x86_64-linux waits for
 // step A on x86_64-linux, not step A on aarch64-darwin.
 func generatePCConfig(

@@ -6,7 +6,7 @@ CURRENT_SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem)
 cat > "$WORK/basic.json" << 'EOF'
 {"steps":{"a":{"command":"echo step-a"},"b":{"command":"echo step-b"}}}
 EOF
-run_giton --sha "$SHA" -f "$WORK/basic.json"
+run_localci --sha "$SHA" -f "$WORK/basic.json"
 if [[ $RC -eq 0 ]] && echo "$OUT" | grep -q "step-a" && echo "$OUT" | grep -q "step-b"; then
   pass "basic success"
 else
@@ -17,7 +17,7 @@ fi
 cat > "$WORK/deps.json" << 'EOF'
 {"steps":{"first":{"command":"echo FIRST"},"second":{"command":"echo SECOND","depends_on":["first"]}}}
 EOF
-run_giton --sha "$SHA" -f "$WORK/deps.json"
+run_localci --sha "$SHA" -f "$WORK/deps.json"
 if [[ $RC -eq 0 ]]; then
   first_pos=$(echo "$OUT" | grep -n "FIRST" | head -1 | cut -d: -f1)
   second_pos=$(echo "$OUT" | grep -n "SECOND" | head -1 | cut -d: -f1)
@@ -34,7 +34,7 @@ fi
 cat > "$WORK/fail.json" << 'EOF'
 {"steps":{"ok":{"command":"echo ok"},"bad":{"command":"exit 1","depends_on":["ok"]}}}
 EOF
-run_giton --sha "$SHA" -f "$WORK/fail.json"
+run_localci --sha "$SHA" -f "$WORK/fail.json"
 if [[ $RC -ne 0 ]] && echo "$OUT" | grep -q "failed"; then
   pass "failure propagates exit code"
 else
@@ -45,7 +45,7 @@ fi
 cat > "$WORK/indep-fail.json" << 'EOF'
 {"steps":{"good":{"command":"echo ok"},"bad":{"command":"exit 1"}}}
 EOF
-run_giton --sha "$SHA" -f "$WORK/indep-fail.json"
+run_localci --sha "$SHA" -f "$WORK/indep-fail.json"
 if [[ $RC -ne 0 ]]; then
   pass "independent step failure propagates exit code"
 else
@@ -53,9 +53,9 @@ else
 fi
 
 # Log files created on failure
-rm -rf /tmp/giton-"${SHA:0:12}"-logs
-run_giton --sha "$SHA" -f "$WORK/fail.json"
-LOG_DIR="/tmp/giton-${SHA:0:12}-logs"
+rm -rf /tmp/localci-"${SHA:0:12}"-logs
+run_localci --sha "$SHA" -f "$WORK/fail.json"
+LOG_DIR="/tmp/localci-${SHA:0:12}-logs"
 if [[ -d "$LOG_DIR" ]] && ls "$LOG_DIR"/*.log &>/dev/null; then
   pass "creates log files on failure"
 else
@@ -63,7 +63,7 @@ else
 fi
 
 # Config file not found
-run_giton --sha "$SHA" -f /nonexistent.json
+run_localci --sha "$SHA" -f /nonexistent.json
 if [[ $RC -ne 0 ]] && echo "$OUT" | grep -qi "not found"; then
   pass "config file not found exits with error"
 else
@@ -74,7 +74,7 @@ fi
 cat > "$WORK/sys.json" << EOF
 {"steps":{"build":{"systems":["$CURRENT_SYSTEM"],"command":"echo built"}}}
 EOF
-run_giton --sha "$SHA" -f "$WORK/sys.json"
+run_localci --sha "$SHA" -f "$WORK/sys.json"
 if [[ $RC -eq 0 ]] && echo "$OUT" | grep -q "built"; then
   pass "with systems (local)"
 else
@@ -86,9 +86,9 @@ true > "$GH_CALL_LOG"
 cat > "$WORK/statuses.json" << 'EOF'
 {"steps":{"alpha":{"command":"true"},"beta":{"command":"true"}}}
 EOF
-run_giton --sha "$SHA" -f "$WORK/statuses.json"
-alpha_count=$(grep -c "giton/alpha" "$GH_CALL_LOG" || true)
-beta_count=$(grep -c "giton/beta" "$GH_CALL_LOG" || true)
+run_localci --sha "$SHA" -f "$WORK/statuses.json"
+alpha_count=$(grep -c "localci/alpha" "$GH_CALL_LOG" || true)
+beta_count=$(grep -c "localci/beta" "$GH_CALL_LOG" || true)
 if [[ "$alpha_count" -ge 2 && "$beta_count" -ge 2 ]]; then
   pass "posts GitHub statuses for each step"
 else

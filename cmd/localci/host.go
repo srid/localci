@@ -1,5 +1,5 @@
 // Host configuration: maps Nix system strings (e.g. "aarch64-darwin") to
-// SSH hostnames. Persisted in $XDG_CONFIG_HOME/giton/hosts.json so users
+// SSH hostnames. Persisted in $XDG_CONFIG_HOME/localci/hosts.json so users
 // only need to enter a hostname once per system.
 package main
 
@@ -18,7 +18,7 @@ func hostsFilePath() string {
 		home, _ := os.UserHomeDir()
 		configDir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(configDir, "giton", "hosts.json")
+	return filepath.Join(configDir, "localci", "hosts.json")
 }
 
 func loadHosts() (map[string]string, error) {

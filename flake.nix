@@ -11,15 +11,15 @@
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       perSystem = { pkgs, ... }:
         let
-          giton = pkgs.buildGoModule {
-            pname = "giton";
+          localci = pkgs.buildGoModule {
+            pname = "localci";
             version = "0.1.0";
             src = ./.;
             vendorHash = "sha256-0rbdfZLARlCeyUXRGWUZ/g36S1YV9tAyCm6eupGloEE=";
-            subPackages = [ "cmd/giton" ];
+            subPackages = [ "cmd/localci" ];
             meta.description = "Local CI tool — run commands on Nix platforms with GitHub status reporting";
           };
-          testFiles = pkgs.runCommand "giton-test-files" { } ''
+          testFiles = pkgs.runCommand "localci-test-files" { } ''
             mkdir -p $out
             cp ${./test/run.sh} $out/run.sh
             cp ${./test/test_single_step.sh} $out/test_single_step.sh
@@ -30,20 +30,20 @@
         in
         {
           # Wrapped binary with runtime deps in PATH
-          packages.default = giton.overrideAttrs (old: {
+          packages.default = localci.overrideAttrs (old: {
             nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.makeWrapper ];
             postInstall = ''
-              wrapProgram $out/bin/giton \
+              wrapProgram $out/bin/localci \
                 --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git pkgs.gh pkgs.nix pkgs.openssh pkgs.process-compose ]}
             '';
           });
 
           # Test runner (uses unwrapped binary so mock gh takes precedence in PATH)
           packages.test = pkgs.writeShellApplication {
-            name = "giton-test";
+            name = "localci-test";
             runtimeInputs = [ pkgs.git pkgs.nix pkgs.process-compose ];
             text = ''
-              export GITON="${giton}/bin/giton"
+              export LOCALCI="${localci}/bin/localci"
               exec bash ${testFiles}/run.sh "$@"
             '';
           };
