@@ -24,7 +24,13 @@ func main() {
 	// each step, since the repo is already extracted to a temp dir.
 	var sha string
 	if args.shaPin != "" {
-		sha = args.shaPin
+		// Resolve symbolic refs (e.g. "HEAD") to full SHA for GitHub API
+		resolved, err := resolveRef(args.shaPin)
+		if err != nil {
+			sha = args.shaPin // fall back to literal if resolution fails
+		} else {
+			sha = resolved
+		}
 	} else {
 		if !isTreeClean() {
 			logErr("Working tree is dirty. Commit or stash changes first.")
