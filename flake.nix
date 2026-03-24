@@ -9,14 +9,20 @@
   outputs = inputs:
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
-      perSystem = { pkgs, ... }: {
-        packages.default = pkgs.writeShellApplication {
-          name = "giton";
-          meta.description = "Local CI tool — run commands on Nix platforms with GitHub status reporting";
-          runtimeInputs = [ pkgs.git pkgs.gh pkgs.nix pkgs.jq pkgs.openssh pkgs.process-compose ];
-          excludeShellChecks = [ "SC2029" "SC2317" "SC2329" ];
-          text = builtins.readFile ./giton;
+      perSystem = { pkgs, ... }:
+        let
+          python = pkgs.python3;
+          runtimeDeps = [ python pkgs.git pkgs.gh pkgs.nix pkgs.openssh pkgs.process-compose ];
+        in
+        {
+          packages.default = pkgs.writeShellApplication {
+            name = "giton";
+            meta.description = "Local CI tool — run commands on Nix platforms with GitHub status reporting";
+            runtimeInputs = runtimeDeps;
+            text = ''
+              exec python3 ${./giton.py} "$@"
+            '';
+          };
         };
-      };
     };
 }
