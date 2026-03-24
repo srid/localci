@@ -182,10 +182,11 @@ func runMultiStep(args cliArgs, sha string) int {
 	}
 	pcFile.Close()
 
-	// Cleanup (skip in MCP mode — no pre-extraction to clean up)
-	if !args.mcp {
-		workdirBase := fmt.Sprintf("/tmp/localci-%s", shortSHA(sha))
-		defer func() {
+	// Cleanup temp dirs on exit
+	defer func() {
+		os.RemoveAll(logDir)
+		if !args.mcp {
+			workdirBase := fmt.Sprintf("/tmp/localci-%s", shortSHA(sha))
 			os.RemoveAll(localDir)
 			for _, sys := range allSystems {
 				if sys != currentSystem {
@@ -194,8 +195,8 @@ func runMultiStep(args cliArgs, sha string) int {
 					exec.Command("ssh", host, "rm -rf '"+rdir+"'").Run()
 				}
 			}
-		}()
-	}
+		}
+	}()
 
 	// Run process-compose
 	pcArgs := []string{"up", "--config", pcFile.Name()}

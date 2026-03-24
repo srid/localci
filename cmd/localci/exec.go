@@ -85,7 +85,7 @@ func runSingleStep(args cliArgs, sha string) int {
 		}
 		rc = runSSH(host, remoteDir, args.cmd)
 	} else {
-		tmpdir, err := os.MkdirTemp("", fmt.Sprintf("giton-%s-", shortSHA(sha)))
+		tmpdir, err := os.MkdirTemp("", fmt.Sprintf("localci-%s-", shortSHA(sha)))
 		if err != nil {
 			logErr("Failed to create temp dir: %v", err)
 			return 1
