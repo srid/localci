@@ -119,30 +119,36 @@ func runMultiStep(args cliArgs, sha string) int {
 		}
 	}
 
-	// Pre-extract repo once per system
-	workdirBase := fmt.Sprintf("/tmp/localci-%s", shortSHA(sha))
 	workdirMap := make(map[string]string)
+	var localDir string
 
-	// Local
-	localDir := workdirBase + "-local"
-	logMsg("Extracting repo (local)...")
-	if err := extractRepoLocal(sha, localDir); err != nil {
-		logErr("Failed to extract repo locally: %v", err)
-		return 1
-	}
-	workdirMap[currentSystem] = localDir
+	if args.mcp {
+		// MCP mode: skip pre-extraction. Each tool invocation resolves HEAD
+		// fresh and extracts its own archive. This ensures agents always run
+		// against the current commit, not a stale one from server startup.
+	} else {
+		// Normal mode: pre-extract repo once per system for efficiency
+		workdirBase := fmt.Sprintf("/tmp/localci-%s", shortSHA(sha))
 
-	// Remote systems
-	for _, sys := range allSystems {
-		if sys != currentSystem {
-			host := hostMap[sys]
-			rdir := fmt.Sprintf("%s-%s", workdirBase, sys)
-			logMsg("Extracting repo on %s (%s)...", cBold(host), sys)
-			if err := extractRepoRemote(sha, host, rdir); err != nil {
-				logErr("Failed to extract repo on %s: %v", host, err)
-				return 1
+		localDir = workdirBase + "-local"
+		logMsg("Extracting repo (local)...")
+		if err := extractRepoLocal(sha, localDir); err != nil {
+			logErr("Failed to extract repo locally: %v", err)
+			return 1
+		}
+		workdirMap[currentSystem] = localDir
+
+		for _, sys := range allSystems {
+			if sys != currentSystem {
+				host := hostMap[sys]
+				rdir := fmt.Sprintf("%s-%s", workdirBase, sys)
+				logMsg("Extracting repo on %s (%s)...", cBold(host), sys)
+				if err := extractRepoRemote(sha, host, rdir); err != nil {
+					logErr("Failed to extract repo on %s: %v", host, err)
+					return 1
+				}
+				workdirMap[sys] = rdir
 			}
-			workdirMap[sys] = rdir
 		}
 	}
 
@@ -160,7 +166,7 @@ func runMultiStep(args cliArgs, sha string) int {
 	}
 
 	// Generate process-compose config
-	pcCfg := generatePCConfig(procs, config, sha, self, cwd, logDir, hostMap, workdirMap, args.mcp)
+	pcCfg := generatePCConfig(procs, config, sha, self, cwd, logDir, hostMap, workdirMap, args.mcp, args.noSignoff)
 
 	// Write process-compose config to temp file
 	pcFile, err := os.CreateTemp("", "localci-pc-*.json")
@@ -178,17 +184,20 @@ func runMultiStep(args cliArgs, sha string) int {
 	}
 	pcFile.Close()
 
-	// Cleanup function
-	defer func() {
-		os.RemoveAll(localDir)
-		for _, sys := range allSystems {
-			if sys != currentSystem {
-				host := hostMap[sys]
-				rdir := fmt.Sprintf("%s-%s", workdirBase, sys)
-				exec.Command("ssh", host, "rm -rf '"+rdir+"'").Run()
+	// Cleanup (skip in MCP mode — no pre-extraction to clean up)
+	if !args.mcp {
+		workdirBase := fmt.Sprintf("/tmp/localci-%s", shortSHA(sha))
+		defer func() {
+			os.RemoveAll(localDir)
+			for _, sys := range allSystems {
+				if sys != currentSystem {
+					host := hostMap[sys]
+					rdir := fmt.Sprintf("%s-%s", workdirBase, sys)
+					exec.Command("ssh", host, "rm -rf '"+rdir+"'").Run()
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	// Run process-compose
 	pcArgs := []string{"up", "--config", pcFile.Name()}
@@ -281,18 +290,30 @@ func generatePCConfig(
 	procs []processEntry, config MultiStepConfig,
 	sha, self, cwd, logDir string,
 	hostMap, workdirMap map[string]string,
-	mcpMode bool,
+	mcpMode, noSignoff bool,
 ) pcConfig {
 	processes := make(map[string]pcProcess)
 
 	for _, p := range procs {
 		step := config.Steps[p.step]
 
-		cmdParts := []string{self, "--sha", sha}
+		// In MCP mode, use "HEAD" so each invocation resolves the current
+		// commit fresh. In normal mode, use the pre-resolved SHA with
+		// --workdir for efficiency.
+		stepSHA := sha
+		if mcpMode {
+			stepSHA = "HEAD"
+		}
+		cmdParts := []string{self, "--sha", stepSHA}
+		if noSignoff {
+			cmdParts = append(cmdParts, "--no-signoff")
+		}
 		if p.sys != "" {
 			cmdParts = append(cmdParts, "-s", p.sys)
-			if dir, ok := workdirMap[p.sys]; ok {
-				cmdParts = append(cmdParts, "--workdir", dir)
+			if !mcpMode {
+				if dir, ok := workdirMap[p.sys]; ok {
+					cmdParts = append(cmdParts, "--workdir", dir)
+				}
 			}
 		}
 		cmdParts = append(cmdParts, "-n", p.step, "--", step.Command)

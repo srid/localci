@@ -27,18 +27,27 @@ func runSingleStep(args cliArgs, sha string) int {
 		context = fmt.Sprintf("localci/%s", name)
 	}
 
-	repo, err := getRepo()
-	if err != nil || repo == "" {
-		logErr("Could not determine GitHub repository. Is 'gh' authenticated?")
-		return 1
+	var repo string
+	if !args.noSignoff {
+		var err error
+		repo, err = getRepo()
+		if err != nil || repo == "" {
+			logErr("Could not determine GitHub repository. Is 'gh' authenticated?")
+			return 1
+		}
 	}
 
 	cmdStr := strings.Join(args.cmd, " ")
 
-	logMsg("%s  %s", cBold(context), cDim(repo+"@"+shortSHA(sha)))
+	logMsg("%s  %s", cBold(context), cDim(shortSHA(sha)))
+	if repo != "" {
+		logInfo("%s@%s", repo, shortSHA(sha))
+	}
 	logInfo("%s", cmdStr)
 
-	postStatus(repo, sha, "pending", context, "Running: "+cmdStr)
+	if !args.noSignoff {
+		postStatus(repo, sha, "pending", context, "Running: "+cmdStr)
+	}
 
 	// Remote execution triggers when --system differs from the current host
 	remote := args.systemExplicit && getCurrentSystem() != args.system
@@ -95,10 +104,14 @@ func runSingleStep(args cliArgs, sha string) int {
 
 	if rc == 0 {
 		logOk("%s passed in %s", cBold(context), cGreen(elapsed))
-		postStatus(repo, sha, "success", context, fmt.Sprintf("Passed in %s: %s", elapsed, cmdStr))
+		if !args.noSignoff {
+			postStatus(repo, sha, "success", context, fmt.Sprintf("Passed in %s: %s", elapsed, cmdStr))
+		}
 	} else {
 		logWarn("%s failed (exit %d) in %s", cBold(context), rc, cYellow(elapsed))
-		postStatus(repo, sha, "failure", context, fmt.Sprintf("Failed (exit %d) in %s: %s", rc, elapsed, cmdStr))
+		if !args.noSignoff {
+			postStatus(repo, sha, "failure", context, fmt.Sprintf("Failed (exit %d) in %s: %s", rc, elapsed, cmdStr))
+		}
 	}
 
 	return rc
