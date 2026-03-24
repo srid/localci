@@ -1,0 +1,22 @@
+name: Test
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nixbuild/nix-quick-install-action@v34
+      - run: nix build
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nixbuild/nix-quick-install-action@v34
+      - name: Run integration tests
+        run: |
+          nix shell nixpkgs#git nixpkgs#jq nixpkgs#openssh nixpkgs#process-compose -c bash test/run.sh
