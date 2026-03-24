@@ -7,4 +7,4 @@ ci:
 
 # Run integration tests
 test:
-    nix run ./test
+    nix run .#test
