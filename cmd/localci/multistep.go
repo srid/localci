@@ -338,7 +338,9 @@ func generatePCConfig(
 			if hostname == "" {
 				hostname = "local"
 			}
-			proc.Namespace = fmt.Sprintf("%s (%s)", p.sys, hostname)
+			proc.Namespace = fmt.Sprintf("%s (%s) @%s", p.sys, hostname, shortSHA(sha))
+		} else {
+			proc.Namespace = "@" + shortSHA(sha)
 		}
 
 		processes[p.key] = proc
