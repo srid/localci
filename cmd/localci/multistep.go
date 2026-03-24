@@ -169,10 +169,15 @@ func runMultiStep(args cliArgs, sha string) int {
 	}
 
 	logDir := fmt.Sprintf("/tmp/localci-%s-logs", shortSHA(sha))
+	// Clean stale logs from previous runs at the same SHA
+	os.RemoveAll(logDir)
 	os.MkdirAll(logDir, 0o755)
 
 	// Build process entries (step × system matrix)
 	procs := buildProcessEntries(config)
+
+	// Write step manifest so the report knows step→system mapping
+	writeManifest(logDir, procs)
 
 	// Resolve self path
 	self, err := selfPathResolved()
@@ -379,15 +384,6 @@ func generatePCConfig(
 	return cfg
 }
 
-// parseProcessKey splits "step (system)" into step and system parts.
-// Returns (name, "") if no system suffix.
-func parseProcessKey(key string) (string, string) {
-	if idx := strings.LastIndex(key, " ("); idx != -1 && strings.HasSuffix(key, ")") {
-		return key[:idx], key[idx+2 : len(key)-1]
-	}
-	return key, ""
-}
-
 var logNameReplacer = strings.NewReplacer("/", "-", " ", "-", "(", "-", ")", "-")
 var multiDash = regexp.MustCompile(`-{2,}`)
 
@@ -416,110 +412,134 @@ func mustHostname() string {
 	return h
 }
 
-// stepLog holds parsed info from a process-compose log file.
-type stepLog struct {
-	name     string // process-compose key, e.g. "nix (x86_64-linux)"
+// manifestEntry describes a step in the manifest file written to the log dir.
+type manifestEntry struct {
+	Key     string `json:"key"`
+	Step    string `json:"step"`
+	System  string `json:"system,omitempty"`
+	LogFile string `json:"log_file"`
+}
+
+func writeManifest(logDir string, procs []processEntry) {
+	var entries []manifestEntry
+	for _, p := range procs {
+		entries = append(entries, manifestEntry{
+			Key:     p.key,
+			Step:    p.step,
+			System:  p.sys,
+			LogFile: filepath.Join(logDir, sanitizeLogName(p.key)+".log"),
+		})
+	}
+	data, _ := json.MarshalIndent(entries, "", "  ")
+	os.WriteFile(filepath.Join(logDir, "manifest.json"), data, 0o644)
+}
+
+// stepResult holds a step's metadata and parsed log output.
+type stepResult struct {
+	step     string
+	system   string
 	failed   bool
 	messages []string
 }
 
-// parseStepLogs reads all log files and extracts step status and messages.
-func parseStepLogs(logDir string) []stepLog {
-	paths, _ := filepath.Glob(filepath.Join(logDir, "*.log"))
-	var logs []stepLog
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil || len(data) == 0 {
+func loadStepResults(logDir string) []stepResult {
+	// Read manifest for step→system mapping
+	data, err := os.ReadFile(filepath.Join(logDir, "manifest.json"))
+	if err != nil {
+		return nil
+	}
+	var entries []manifestEntry
+	if json.Unmarshal(data, &entries) != nil {
+		return nil
+	}
+
+	var results []stepResult
+	for _, e := range entries {
+		sr := stepResult{step: e.Step, system: e.System}
+		logData, err := os.ReadFile(e.LogFile)
+		if err != nil || len(logData) == 0 {
+			results = append(results, sr)
 			continue
 		}
-		sl := stepLog{}
-		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		for _, line := range strings.Split(strings.TrimSpace(string(logData)), "\n") {
 			var entry struct {
-				Process string `json:"process"`
 				Message string `json:"message"`
 			}
-			if json.Unmarshal([]byte(line), &entry) == nil {
-				// Use the process field from the first log entry as the name
-				if sl.name == "" && entry.Process != "" {
-					sl.name = entry.Process
-				}
-				if entry.Message != "" {
-					sl.messages = append(sl.messages, entry.Message)
-					if strings.Contains(entry.Message, "failed") {
-						sl.failed = true
-					}
+			if json.Unmarshal([]byte(line), &entry) == nil && entry.Message != "" {
+				sr.messages = append(sr.messages, entry.Message)
+				if strings.Contains(entry.Message, "failed") {
+					sr.failed = true
 				}
 			}
 		}
-		if sl.name == "" {
-			sl.name = strings.TrimSuffix(filepath.Base(path), ".log")
-		}
-		logs = append(logs, sl)
+		results = append(results, sr)
 	}
-	return logs
+	return results
 }
 
 // printStepReport prints a summary table of step results and the tail
 // of output for failed steps.
 func printStepReport(logDir string) {
-	logs := parseStepLogs(logDir)
-	if len(logs) == 0 {
+	results := loadStepResults(logDir)
+	if len(results) == 0 {
 		return
 	}
 
-	// Summary table
 	headerFmt := color.New(color.FgWhite, color.Bold).SprintfFunc()
 	passFmt := color.New(color.FgGreen).SprintfFunc()
 	failFmt := color.New(color.FgRed, color.Bold).SprintfFunc()
 
-	// Check if any step has a system (name contains " (system)")
 	hasSystems := false
-	for _, sl := range logs {
-		if strings.Contains(sl.name, " (") {
+	for _, r := range results {
+		if r.system != "" {
 			hasSystems = true
 			break
 		}
 	}
 
+	fmt.Fprintln(os.Stderr)
 	if hasSystems {
 		tbl := table.New("Step", "System", "Status")
 		tbl.WithHeaderFormatter(headerFmt).WithWriter(os.Stderr)
-		for _, sl := range logs {
-			step, sys := parseProcessKey(sl.name)
+		for _, r := range results {
 			status := passFmt("pass")
-			if sl.failed {
+			if r.failed {
 				status = failFmt("FAIL")
 			}
-			tbl.AddRow(step, sys, status)
+			tbl.AddRow(r.step, r.system, status)
 		}
 		tbl.Print()
 	} else {
 		tbl := table.New("Step", "Status")
 		tbl.WithHeaderFormatter(headerFmt).WithWriter(os.Stderr)
-		for _, sl := range logs {
+		for _, r := range results {
 			status := passFmt("pass")
-			if sl.failed {
+			if r.failed {
 				status = failFmt("FAIL")
 			}
-			tbl.AddRow(sl.name, status)
+			tbl.AddRow(r.step, status)
 		}
 		tbl.Print()
 	}
 
 	// Tail of failed step output
 	const tailLines = 20
-	for _, sl := range logs {
-		if !sl.failed {
+	for _, r := range results {
+		if !r.failed {
 			continue
 		}
+		label := r.step
+		if r.system != "" {
+			label += " (" + r.system + ")"
+		}
 		fmt.Fprintln(os.Stderr)
-		logWarn("%s:", cBold(sl.name))
+		logWarn("%s:", cBold(label))
 		start := 0
-		if len(sl.messages) > tailLines {
-			start = len(sl.messages) - tailLines
+		if len(r.messages) > tailLines {
+			start = len(r.messages) - tailLines
 			logInfo("... (%d lines omitted)", start)
 		}
-		for _, msg := range sl.messages[start:] {
+		for _, msg := range r.messages[start:] {
 			fmt.Fprintf(os.Stderr, "    %s\n", msg)
 		}
 	}
