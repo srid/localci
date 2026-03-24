@@ -1,8 +1,11 @@
-# Dev
+# Dev workflow
 
-- Build: `nix build`
-- Test: `nix run .#test` (20 tests)
-- CI locally: `just ci` (dogfoods localci via `localci.json`)
+Use the localci MCP tools (`mcp__localci__build`, `mcp__localci__test`) — never run `nix build` or `go build` directly.
+
+1. Make changes, commit
+2. Run localci MCP tools to verify (these use `--no-signoff` mode internally during iteration)
+3. If failures: fix, amend commit, re-run MCP tools
+4. Once green: push, then run localci MCP tools again to post GitHub statuses
 
 # Architecture
 

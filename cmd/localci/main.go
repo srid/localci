@@ -12,6 +12,24 @@ import (
 )
 
 func main() {
+	// Handle subcommands before flag parsing
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "protect":
+			// Re-parse flags after "protect" subcommand
+			os.Args = append(os.Args[:1], os.Args[2:]...)
+			args := parseArgs()
+			if args.configFile == "" {
+				logErr("protect requires -f <config.json>")
+				os.Exit(1)
+			}
+			os.Exit(runProtect(args))
+		case "run":
+			// "localci run" is the same as "localci" — strip "run"
+			os.Args = append(os.Args[:1], os.Args[2:]...)
+		}
+	}
+
 	args := parseArgs()
 
 	if !isInGitRepo() {
@@ -83,8 +101,9 @@ func parseArgs() cliArgs {
 	flag.StringVar(&a.workdir, "workdir", "", "Pre-extracted working directory (internal, used by multi-step mode)")
 
 	flag.Usage = func() {
-		logErr("Usage: localci [options] -- <command...>")
-		logErr("       localci -f <config.json>")
+		logErr("Usage: localci [run] [options] -- <command...>")
+		logErr("       localci [run] -f <config.json>")
+		logErr("       localci protect -f <config.json>")
 		logErr("")
 		flag.PrintDefaults()
 	}

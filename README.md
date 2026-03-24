@@ -122,14 +122,10 @@ Each step from `localci.json` appears as an MCP tool (named `mcp__localci__<step
 
 ### Branch protection
 
-Require localci checks to pass before merging PRs. This reads step names from `localci.json` and sets them as required status checks:
+Require localci checks to pass before merging PRs. This reads `localci.json`, expands the step×system matrix, and sets the correct status contexts as required checks on the default branch:
 
 ```bash
-gh api repos/OWNER/REPO/branches/main/protection -X PUT \
-  --input <(jq -n --argjson contexts \
-    "$(jq '[.steps | keys[] | "localci/" + .]' localci.json)" \
-    '{required_status_checks: {strict: true, contexts: $contexts},
-      enforce_admins: false, required_pull_request_reviews: null, restrictions: null}')
+localci protect -f localci.json
 ```
 
 ## Reference
