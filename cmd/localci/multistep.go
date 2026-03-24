@@ -379,6 +379,15 @@ func generatePCConfig(
 	return cfg
 }
 
+// parseProcessKey splits "step (system)" into step and system parts.
+// Returns (name, "") if no system suffix.
+func parseProcessKey(key string) (string, string) {
+	if idx := strings.LastIndex(key, " ("); idx != -1 && strings.HasSuffix(key, ")") {
+		return key[:idx], key[idx+2 : len(key)-1]
+	}
+	return key, ""
+}
+
 var logNameReplacer = strings.NewReplacer("/", "-", " ", "-", "(", "-", ")", "-")
 var multiDash = regexp.MustCompile(`-{2,}`)
 
@@ -409,7 +418,7 @@ func mustHostname() string {
 
 // stepLog holds parsed info from a process-compose log file.
 type stepLog struct {
-	name     string
+	name     string // process-compose key, e.g. "nix (x86_64-linux)"
 	failed   bool
 	messages []string
 }
@@ -423,17 +432,27 @@ func parseStepLogs(logDir string) []stepLog {
 		if err != nil || len(data) == 0 {
 			continue
 		}
-		sl := stepLog{name: strings.TrimSuffix(filepath.Base(path), ".log")}
+		sl := stepLog{}
 		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 			var entry struct {
+				Process string `json:"process"`
 				Message string `json:"message"`
 			}
-			if json.Unmarshal([]byte(line), &entry) == nil && entry.Message != "" {
-				sl.messages = append(sl.messages, entry.Message)
-				if strings.Contains(entry.Message, "failed") {
-					sl.failed = true
+			if json.Unmarshal([]byte(line), &entry) == nil {
+				// Use the process field from the first log entry as the name
+				if sl.name == "" && entry.Process != "" {
+					sl.name = entry.Process
+				}
+				if entry.Message != "" {
+					sl.messages = append(sl.messages, entry.Message)
+					if strings.Contains(entry.Message, "failed") {
+						sl.failed = true
+					}
 				}
 			}
+		}
+		if sl.name == "" {
+			sl.name = strings.TrimSuffix(filepath.Base(path), ".log")
 		}
 		logs = append(logs, sl)
 	}
@@ -453,17 +472,39 @@ func printStepReport(logDir string) {
 	passFmt := color.New(color.FgGreen).SprintfFunc()
 	failFmt := color.New(color.FgRed, color.Bold).SprintfFunc()
 
-	tbl := table.New("Step", "Status")
-	tbl.WithHeaderFormatter(headerFmt).WithWriter(os.Stderr)
+	// Check if any step has a system (name contains " (system)")
+	hasSystems := false
 	for _, sl := range logs {
-		if sl.failed {
-			tbl.AddRow(sl.name, failFmt("FAIL"))
-		} else {
-			tbl.AddRow(sl.name, passFmt("pass"))
+		if strings.Contains(sl.name, " (") {
+			hasSystems = true
+			break
 		}
 	}
-	fmt.Fprintln(os.Stderr)
-	tbl.Print()
+
+	if hasSystems {
+		tbl := table.New("Step", "System", "Status")
+		tbl.WithHeaderFormatter(headerFmt).WithWriter(os.Stderr)
+		for _, sl := range logs {
+			step, sys := parseProcessKey(sl.name)
+			status := passFmt("pass")
+			if sl.failed {
+				status = failFmt("FAIL")
+			}
+			tbl.AddRow(step, sys, status)
+		}
+		tbl.Print()
+	} else {
+		tbl := table.New("Step", "Status")
+		tbl.WithHeaderFormatter(headerFmt).WithWriter(os.Stderr)
+		for _, sl := range logs {
+			status := passFmt("pass")
+			if sl.failed {
+				status = failFmt("FAIL")
+			}
+			tbl.AddRow(sl.name, status)
+		}
+		tbl.Print()
+	}
 
 	// Tail of failed step output
 	const tailLines = 20
