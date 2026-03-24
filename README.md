@@ -56,27 +56,6 @@ This expands into a step×system matrix: `build` and `test` each run on both sys
 
 Under the hood, localci generates a [process-compose](https://github.com/F1bonacc1/process-compose) config and delegates orchestration to it. Each step is a self-invocation of localci with `--sha` pinning. Pass `--tui` to get the process-compose terminal UI.
 
-## GitHub Actions
-
-localci works in hosted CI too. Use `--sha` to pin to the PR commit (the clean-tree check doesn't apply in CI since there's no working tree to protect):
-
-```yaml
-jobs:
-  ci:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: nixbuild/nix-quick-install-action@v34
-      - run: nix run github:srid/localci -- --sha ${{ github.sha }} -f localci.json
-```
-
-Each step posts its own commit status (`localci/build`, `localci/test`), so the PR shows fine-grained check results even though it's a single CI job.
-
 ## Agent integration (MCP)
 
 localci can expose CI steps as [MCP](https://modelcontextprotocol.io/) tools via process-compose's built-in MCP server. Coding agents (Claude Code, etc.) connect over stdio and invoke steps individually.
@@ -115,7 +94,7 @@ Then in your project's `CLAUDE.md`, tell the agent to use it:
 Run CI via the localci MCP tools after making changes. If a step fails, fix the code and re-invoke.
 ```
 
-Each step from `localci.json` appears as an MCP tool (named `mcp__localci__<step>`). Dependencies are respected — invoking a step auto-starts its dependencies first. Steps can be re-invoked after fixing code.
+Each step from `localci.json` appears as an MCP tool (named `mcp__localci__<step>`). Dependencies are respected — invoking a step auto-starts its dependencies first. Steps can be re-invoked after fixing code. Step logs are exposed as MCP resources for diagnosis.
 
 ## Reference
 
