@@ -81,7 +81,15 @@ type pcShutdown struct {
 }
 
 type pcMCP struct {
-	Type string `json:"type"`
+	Type      string        `json:"type"`
+	Arguments []pcMCPArg    `json:"arguments,omitempty"`
+}
+
+type pcMCPArg struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required"`
 }
 
 type pcAvailability struct {
@@ -301,12 +309,12 @@ func generatePCConfig(
 	for _, p := range procs {
 		step := config.Steps[p.step]
 
-		// In MCP mode, use "HEAD" so each invocation resolves the current
-		// commit fresh. In normal mode, use the pre-resolved SHA with
-		// --workdir for efficiency.
+		// In MCP mode, use @{sha:HEAD} template so agents can optionally
+		// pass a specific SHA. Defaults to HEAD (resolved fresh each time).
+		// In normal mode, use the pre-resolved SHA with --workdir.
 		stepSHA := sha
 		if mcpMode {
-			stepSHA = "HEAD"
+			stepSHA = "@{sha:HEAD}"
 		}
 		cmdParts := []string{self, "--sha", stepSHA}
 		if noSignoff {
@@ -345,7 +353,15 @@ func generatePCConfig(
 		}
 		if mcpMode {
 			proc.Disabled = true
-			proc.MCP = &pcMCP{Type: "tool"}
+			proc.MCP = &pcMCP{
+				Type: "tool",
+				Arguments: []pcMCPArg{{
+					Name:        "sha",
+					Type:        "string",
+					Description: "Git ref to test (default: HEAD)",
+					Required:    false,
+				}},
+			}
 		} else {
 			proc.Availability = &pcAvailability{Restart: "exit_on_failure"}
 		}
