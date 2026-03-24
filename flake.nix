@@ -15,7 +15,7 @@
             pname = "giton";
             version = "0.1.0";
             src = ./.;
-            vendorHash = null;
+            vendorHash = "sha256-Z8V1a3uJdG/lj6AP4Xly01MQSq/yBnB2/TuERrrj0o0=";
             meta.description = "Local CI tool — run commands on Nix platforms with GitHub status reporting";
           };
           testFiles = pkgs.runCommand "giton-test-files" { } ''
