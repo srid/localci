@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // StepConfig represents a step in the multi-step config file (localci.json).
@@ -212,23 +210,7 @@ func runMultiStep(args cliArgs, sha string) int {
 	pcCmd.Stdout = os.Stdout
 	pcCmd.Stderr = os.Stderr
 	pcCmd.Stdin = os.Stdin
-	// Run in its own process group so we can signal it cleanly
-	pcCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := pcCmd.Start(); err != nil {
-		logErr("Failed to start process-compose: %v", err)
-		return 1
-	}
-	// Forward SIGINT/SIGTERM to the process-compose process group
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		if pcCmd.Process != nil {
-			syscall.Kill(-pcCmd.Process.Pid, sig.(syscall.Signal))
-		}
-	}()
-	pcExit := exitCode(pcCmd.Wait())
-	signal.Stop(sigCh)
+	pcExit := exitCode(pcCmd.Run())
 
 	// Print summary (skip in MCP mode — agent reads structured MCP responses)
 	if !args.mcp {
