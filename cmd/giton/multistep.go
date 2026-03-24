@@ -11,7 +11,8 @@ import (
 	"strings"
 )
 
-// StepConfig represents a step in the multi-step config file.
+// StepConfig represents a step in the multi-step config file (giton.json).
+// Each step has a command and optionally targets specific Nix systems.
 type StepConfig struct {
 	Command   string   `json:"command"`
 	Systems   []string `json:"systems,omitempty"`
@@ -23,7 +24,8 @@ type MultiStepConfig struct {
 	Steps map[string]StepConfig `json:"steps"`
 }
 
-// ProcessCompose types for config generation.
+// Process-compose config types. We generate a JSON config file and hand it
+// to process-compose for parallel step orchestration with dependency ordering.
 type pcConfig struct {
 	Version          string               `json:"version"`
 	LogConfiguration pcLogConfig          `json:"log_configuration"`
@@ -58,6 +60,10 @@ type processEntry struct {
 	key  string // process-compose process name
 }
 
+// runMultiStep reads a JSON config defining steps (with optional systems and
+// dependencies), resolves remote hosts, extracts the repo to each target,
+// generates a process-compose config, and runs all steps in parallel.
+// Each step self-invokes giton in single-step mode with --sha pinning.
 func runMultiStep(args cliArgs, sha string) int {
 	data, err := os.ReadFile(args.configFile)
 	if err != nil {
@@ -83,7 +89,8 @@ func runMultiStep(args cliArgs, sha string) int {
 	// Collect all unique systems from config
 	allSystems := collectSystems(config)
 
-	// Resolve remote hosts upfront
+	// Resolve remote hosts upfront — process-compose subprocesses can't
+	// prompt for hostnames, so we do it here while we still have a TTY.
 	hostMap := map[string]string{currentSystem: mustHostname()}
 	for _, sys := range allSystems {
 		if sys != currentSystem {
@@ -206,6 +213,9 @@ func collectSystems(config MultiStepConfig) []string {
 	return systems
 }
 
+// buildProcessEntries expands the step×system matrix into individual
+// process entries. Each entry gets a unique key for process-compose:
+// just the step name when there's one system, "step (system)" when multiple.
 func buildProcessEntries(config MultiStepConfig) []processEntry {
 	var procs []processEntry
 	for stepName, step := range config.Steps {
@@ -224,6 +234,10 @@ func buildProcessEntries(config MultiStepConfig) []processEntry {
 	return procs
 }
 
+// generatePCConfig builds the process-compose JSON config. Each process
+// is a self-invocation of giton in single-step mode with --sha pinning.
+// Dependencies are resolved per-system: step B on x86_64-linux waits for
+// step A on x86_64-linux, not step A on aarch64-darwin.
 func generatePCConfig(
 	procs []processEntry, config MultiStepConfig,
 	sha, self, cwd, logDir string,
@@ -291,6 +305,9 @@ func sanitizeLogName(name string) string {
 	return strings.TrimRight(s, "-")
 }
 
+// selfPathResolved returns the real path to this executable, following
+// symlinks. Needed because nix wraps the binary and we need the wrapper
+// path for self-invocation in multi-step mode.
 func selfPathResolved() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -307,6 +324,9 @@ func mustHostname() string {
 	return h
 }
 
+// printFailedLogs reads process-compose JSON log files and prints
+// messages from steps that contain "failed". Only used in non-TUI mode
+// to surface errors after process-compose exits.
 func printFailedLogs(logDir string) {
 	paths, _ := filepath.Glob(filepath.Join(logDir, "*.log"))
 	for _, path := range paths {

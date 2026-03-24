@@ -1,3 +1,8 @@
+// giton — local CI tool that runs commands on Nix platforms and posts
+// GitHub commit statuses. Two modes: single-step (-- <cmd>) runs one
+// command; multi-step (-f config.json) orchestrates parallel steps via
+// process-compose. When --system differs from the current host, commands
+// run on a remote machine over SSH.
 package main
 
 import (
@@ -14,6 +19,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	// --sha pins to an explicit commit and skips the clean-tree check.
+	// This is used internally by multi-step mode when self-invoking for
+	// each step, since the repo is already extracted to a temp dir.
 	var sha string
 	if args.shaPin != "" {
 		sha = args.shaPin
@@ -45,13 +53,13 @@ func main() {
 
 type cliArgs struct {
 	system         string
-	systemExplicit bool
+	systemExplicit bool // true when -s/--system was passed (even for local system)
 	name           string
-	cmd            []string
+	cmd            []string // everything after --
 	shaPin         string
 	configFile     string
 	tui            bool
-	workdir        string
+	workdir        string // pre-extracted dir, set by multi-step self-invocation
 }
 
 func parseArgs() cliArgs {

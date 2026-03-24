@@ -10,12 +10,16 @@ import (
 	"time"
 )
 
+// runSingleStep runs one command, posts GitHub pending/success/failure
+// statuses, and returns the command's exit code. The command runs in a
+// clean git-archive extraction (local tmpdir or remote via SSH).
 func runSingleStep(args cliArgs, sha string) int {
 	name := args.name
 	if name == "" {
 		name = filepath.Base(args.cmd[0])
 	}
 
+	// Status context: "giton/<name>" without --system, "giton/<name>/<system>" with
 	var context string
 	if args.systemExplicit {
 		context = fmt.Sprintf("giton/%s/%s", name, args.system)
@@ -36,12 +40,15 @@ func runSingleStep(args cliArgs, sha string) int {
 
 	postStatus(repo, sha, "pending", context, "Running: "+cmdStr)
 
+	// Remote execution triggers when --system differs from the current host
 	remote := args.systemExplicit && getCurrentSystem() != args.system
 
 	start := time.Now()
 	var rc int
 
 	if args.workdir != "" {
+		// Pre-extracted workdir: multi-step mode already extracted the repo
+		// once per system, so sub-invocations reuse that directory.
 		if remote {
 			host, err := getRemoteHost(args.system)
 			if err != nil {
@@ -131,6 +138,8 @@ func cleanupRemote(host, dir string) {
 	exec.Command("ssh", host, "rm -rf '"+dir+"'").Run()
 }
 
+// ensureSSHControlDir creates the parent directory for the SSH
+// ControlMaster socket, so connection multiplexing works on first use.
 func ensureSSHControlDir(host string) {
 	out, err := exec.Command("ssh", "-G", host).Output()
 	if err != nil {
@@ -145,6 +154,8 @@ func ensureSSHControlDir(host string) {
 	}
 }
 
+// getCurrentSystem returns the Nix system string (e.g. "x86_64-linux")
+// for the machine we're running on.
 func getCurrentSystem() string {
 	out, err := exec.Command("nix", "eval", "--raw", "--impure", "--expr", "builtins.currentSystem").Output()
 	if err != nil {

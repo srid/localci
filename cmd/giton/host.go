@@ -1,3 +1,6 @@
+// Host configuration: maps Nix system strings (e.g. "aarch64-darwin") to
+// SSH hostnames. Persisted in $XDG_CONFIG_HOME/giton/hosts.json so users
+// only need to enter a hostname once per system.
 package main
 
 import (

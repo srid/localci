@@ -1,3 +1,5 @@
+// Git operations: repo detection, clean-tree check, HEAD resolution,
+// and archive extraction (local and remote via SSH pipe).
 package main
 
 import (
@@ -52,7 +54,9 @@ func extractRepoRemote(sha, host, dir string) error {
 	return pipeGitArchive(sha, sshCmd)
 }
 
-// pipeGitArchive pipes git archive output into the given consumer command.
+// pipeGitArchive streams `git archive` tar output into a consumer command
+// (either local `tar -x` or remote `ssh host "tar -x"`). This avoids
+// writing the archive to disk — the tar stream flows through a pipe.
 func pipeGitArchive(sha string, consumer *exec.Cmd) error {
 	archive := exec.Command("git", "archive", "--format=tar", sha)
 	pipe, err := archive.StdoutPipe()

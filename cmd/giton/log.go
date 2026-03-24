@@ -1,3 +1,5 @@
+// Colored log output to stderr. fatih/color auto-disables when stderr
+// is not a TTY (piped or redirected), matching the bash version's behavior.
 package main
 
 import (
@@ -8,6 +10,7 @@ import (
 	"github.com/fatih/color"
 )
 
+// Color functions for inline styling within log messages.
 var (
 	cBold   = color.New(color.Bold).SprintFunc()
 	cDim    = color.New(color.Faint).SprintFunc()
@@ -39,6 +42,8 @@ func logWarn(msg string, args ...any) {
 	fmt.Fprintf(os.Stderr, "%s %s\n", cWarn("==>"), fmt.Sprintf(msg, args...))
 }
 
+// fmtDuration formats a duration as "Xs", "Xm00s", or "Xh00m00s"
+// matching the compact style used in GitHub status descriptions.
 func fmtDuration(d time.Duration) string {
 	s := int(d.Seconds())
 	if s >= 3600 {
