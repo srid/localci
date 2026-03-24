@@ -55,6 +55,7 @@ CMD=()
 SHA_PIN=""
 CONFIG_FILE=""
 TUI=false
+WORKDIR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -78,6 +79,10 @@ while [[ $# -gt 0 ]]; do
     --tui)
       TUI=true
       shift
+      ;;
+    --workdir)
+      WORKDIR="$2"
+      shift 2
       ;;
     --)
       shift
@@ -182,19 +187,54 @@ if [[ -n "$CONFIG_FILE" ]]; then
     fi
   done
 
-  # Generate process-compose config (JSON, which is valid YAML) from giton config
+  # Pre-extract repo once per system (shared workdir for all steps on same system)
+  WORKDIR_BASE="/tmp/giton-${SHA:0:12}"
+  ALL_SYSTEMS=$(jq -r '[.steps[].systems // [] | .[]] | unique[]' "$CONFIG_FILE")
+  WORKDIR_MAP='{}'
+
+  # Local system workdir
+  LOCAL_DIR="${WORKDIR_BASE}-local"
+  mkdir -p "$LOCAL_DIR"
+  log "Extracting repo (local)..."
+  git archive --format=tar "$SHA" | tar -C "$LOCAL_DIR" -x
+  chmod -R u+w "$LOCAL_DIR"
+  WORKDIR_MAP=$(echo "$WORKDIR_MAP" | jq --arg sys "$CURRENT_SYSTEM" --arg dir "$LOCAL_DIR" '. + {($sys): $dir}')
+
+  # Remote system workdirs
+  for sys in $ALL_SYSTEMS; do
+    if [[ "$sys" != "$CURRENT_SYSTEM" ]]; then
+      HOST=$(echo "$HOST_MAP" | jq -r --arg s "$sys" '.[$s]')
+      RDIR="${WORKDIR_BASE}-${sys}"
+      log "Extracting repo on ${BOLD}${HOST}${RESET} (${sys})..."
+      git archive --format=tar "$SHA" | ssh "$HOST" "mkdir -p '$RDIR' && tar -C '$RDIR' -x && chmod -R u+w '$RDIR'"
+      WORKDIR_MAP=$(echo "$WORKDIR_MAP" | jq --arg sys "$sys" --arg dir "$RDIR" '. + {($sys): $dir}')
+    fi
+  done
+
   LOG_DIR="/tmp/giton-${SHA:0:12}-logs"
   mkdir -p "$LOG_DIR"
 
   PC_FILE=$(mktemp /tmp/giton-pc-XXXXXX.json)
-  cleanup_pc() { rm -f "$PC_FILE"; }
-  trap cleanup_pc EXIT
+  cleanup_all() {
+    rm -f "$PC_FILE"
+    # Clean up local workdir
+    rm -rf "$LOCAL_DIR"
+    # Clean up remote workdirs
+    for sys in $ALL_SYSTEMS; do
+      if [[ "$sys" != "$CURRENT_SYSTEM" ]]; then
+        HOST=$(echo "$HOST_MAP" | jq -r --arg s "$sys" '.[$s]')
+        RDIR="${WORKDIR_BASE}-${sys}"
+        ssh "$HOST" "rm -rf '$RDIR'" 2>/dev/null || true
+      fi
+    done
+  }
+  trap cleanup_all EXIT
 
   # Build process-compose config via jq.
   # Each step × system becomes a process; dependencies expand per-system.
   # Process-compose keys: just the step name when only one system,
   # "step (system)" when multiple systems for disambiguation.
-  jq --arg sha "$SHA" --arg bin "$0" --arg wd "$PWD" --arg logdir "$LOG_DIR" --argjson hosts "$HOST_MAP" '
+  jq --arg sha "$SHA" --arg bin "$0" --arg wd "$PWD" --arg logdir "$LOG_DIR" --argjson hosts "$HOST_MAP" --argjson workdirs "$WORKDIR_MAP" '
     .steps as $steps |
 
     # Build a lookup: for each step+system, what is the process key?
@@ -213,6 +253,7 @@ if [[ -n "$CONFIG_FILE" ]]; then
       ($steps[$step]) as $cfg |
       ( [$bin, "--sha", $sha]
         + (if $sys then ["-s", $sys] else [] end)
+        + (if $sys and $workdirs[$sys] then ["--workdir", $workdirs[$sys]] else [] end)
         + ["-n", $step, "--", $cfg.command] | join(" ")
       ) as $command |
       ($cfg.depends_on // []) as $deps |
@@ -321,10 +362,18 @@ run_cmd() {
 
 CMD_START=$SECONDS
 
-if [[ "$REMOTE" == true ]]; then
+if [[ -n "$WORKDIR" ]]; then
+  # Pre-extracted workdir provided (multi-step mode)
+  if [[ "$REMOTE" == true ]]; then
+    HOST=$(get_remote_host "$SYSTEM")
+    run_cmd ssh "$HOST" "cd '$WORKDIR' && ${CMD[*]}"
+  else
+    run_cmd bash -c "cd '$WORKDIR' && $(printf '%q ' "${CMD[@]}")"
+  fi
+elif [[ "$REMOTE" == true ]]; then
   # Remote execution
   HOST=$(get_remote_host "$SYSTEM")
-  REMOTE_DIR="/tmp/giton-${SHA:0:12}-${NAME}"
+  REMOTE_DIR="/tmp/giton-${SHA:0:12}"
 
   cleanup() {
     log "Cleaning up remote temp dir..."
