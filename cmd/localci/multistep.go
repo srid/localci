@@ -191,9 +191,9 @@ func runMultiStep(args cliArgs, sha string) int {
 	// Run process-compose
 	pcArgs := []string{"up", "--config", pcFile.Name()}
 	if args.mcp {
-		// MCP mode: stdio transport, no --no-server (process-compose stays
-		// running and accepts MCP tool invocations from the connected agent)
-		pcArgs = append(pcArgs, "--tui=false")
+		// MCP mode: stdio transport. --no-server disables the HTTP API
+		// (which would conflict on port 8080); MCP uses stdio instead.
+		pcArgs = append(pcArgs, "--tui=false", "--no-server")
 	} else {
 		pcArgs = append(pcArgs, "--tui="+strconv.FormatBool(args.tui), "--no-server")
 	}
