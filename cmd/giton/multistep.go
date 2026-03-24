@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -141,17 +140,7 @@ func runMultiStep(args cliArgs, sha string) int {
 	}
 
 	// Generate process-compose config
-	ctx := &pcGenContext{
-		config:     config,
-		procs:      procs,
-		sha:        sha,
-		self:       self,
-		cwd:        cwd,
-		logDir:     logDir,
-		hostMap:    hostMap,
-		workdirMap: workdirMap,
-	}
-	pcCfg := ctx.generate()
+	pcCfg := generatePCConfig(procs, config, sha, self, cwd, logDir, hostMap, workdirMap)
 
 	// Write process-compose config to temp file
 	pcFile, err := os.CreateTemp("", "giton-pc-*.json")
@@ -235,50 +224,52 @@ func buildProcessEntries(config MultiStepConfig) []processEntry {
 	return procs
 }
 
-// pcGenContext bundles the parameters needed for process-compose config generation.
-type pcGenContext struct {
-	config     MultiStepConfig
-	procs      []processEntry
-	sha, self  string
-	cwd        string
-	logDir     string
-	hostMap    map[string]string
-	workdirMap map[string]string
-}
-
-func (c *pcGenContext) generate() pcConfig {
+func generatePCConfig(
+	procs []processEntry, config MultiStepConfig,
+	sha, self, cwd, logDir string,
+	hostMap, workdirMap map[string]string,
+) pcConfig {
 	processes := make(map[string]pcProcess)
 
-	for _, p := range c.procs {
-		step := c.config.Steps[p.step]
+	for _, p := range procs {
+		step := config.Steps[p.step]
 
-		cmdParts := []string{c.self, "--sha", c.sha}
+		cmdParts := []string{self, "--sha", sha}
 		if p.sys != "" {
 			cmdParts = append(cmdParts, "-s", p.sys)
-			if dir, ok := c.workdirMap[p.sys]; ok {
+			if dir, ok := workdirMap[p.sys]; ok {
 				cmdParts = append(cmdParts, "--workdir", dir)
 			}
 		}
 		cmdParts = append(cmdParts, "-n", p.step, "--", step.Command)
 
-		depends := c.resolveDeps(p, step)
-		logFile := filepath.Join(c.logDir, sanitizeLogName(p.key)+".log")
+		// Resolve dependencies: match by step name + same system
+		var depends map[string]pcDependency
+		for _, dep := range step.DependsOn {
+			for _, dp := range procs {
+				if dp.step == dep && dp.sys == p.sys {
+					if depends == nil {
+						depends = make(map[string]pcDependency)
+					}
+					depends[dp.key] = pcDependency{Condition: "process_completed_successfully"}
+					break
+				}
+			}
+		}
 
 		proc := pcProcess{
 			Command:      strings.Join(cmdParts, " "),
-			WorkingDir:   c.cwd,
-			LogLocation:  logFile,
+			WorkingDir:   cwd,
+			LogLocation:  filepath.Join(logDir, sanitizeLogName(p.key)+".log"),
 			Availability: pcAvailability{Restart: "exit_on_failure"},
+			DependsOn:    depends,
 		}
 		if p.sys != "" {
-			hostname := c.hostMap[p.sys]
+			hostname := hostMap[p.sys]
 			if hostname == "" {
 				hostname = "local"
 			}
 			proc.Namespace = fmt.Sprintf("%s (%s)", p.sys, hostname)
-		}
-		if len(depends) > 0 {
-			proc.DependsOn = depends
 		}
 
 		processes[p.key] = proc
@@ -289,22 +280,6 @@ func (c *pcGenContext) generate() pcConfig {
 		LogConfiguration: pcLogConfig{FlushEachLine: true},
 		Processes:        processes,
 	}
-}
-
-func (c *pcGenContext) resolveDeps(p processEntry, step StepConfig) map[string]pcDependency {
-	if len(step.DependsOn) == 0 {
-		return nil
-	}
-	depends := make(map[string]pcDependency)
-	for _, dep := range step.DependsOn {
-		for _, dp := range c.procs {
-			if dp.step == dep && dp.sys == p.sys {
-				depends[dp.key] = pcDependency{Condition: "process_completed_successfully"}
-				break
-			}
-		}
-	}
-	return depends
 }
 
 var logNameReplacer = strings.NewReplacer("/", "-", " ", "-", "(", "-", ")", "-")
@@ -333,38 +308,21 @@ func mustHostname() string {
 }
 
 func printFailedLogs(logDir string) {
-	entries, err := filepath.Glob(filepath.Join(logDir, "*.log"))
-	if err != nil {
-		return
-	}
-	for _, path := range entries {
-		f, err := os.Open(path)
-		if err != nil {
+	paths, _ := filepath.Glob(filepath.Join(logDir, "*.log"))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil || len(data) == 0 || !strings.Contains(string(data), "failed") {
 			continue
 		}
-
-		var messages []string
-		hasFailed := false
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
+		stepName := strings.TrimSuffix(filepath.Base(path), ".log")
+		fmt.Fprintln(os.Stderr)
+		logWarn("%s:", cBold(stepName))
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 			var entry struct {
 				Message string `json:"message"`
 			}
-			if json.Unmarshal(scanner.Bytes(), &entry) == nil && entry.Message != "" {
-				messages = append(messages, entry.Message)
-				if strings.Contains(entry.Message, "failed") {
-					hasFailed = true
-				}
-			}
-		}
-		f.Close()
-
-		if hasFailed {
-			stepName := strings.TrimSuffix(filepath.Base(path), ".log")
-			fmt.Fprintln(os.Stderr)
-			logWarn("%s:", cBold(stepName))
-			for _, msg := range messages {
-				fmt.Fprintln(os.Stderr, msg)
+			if json.Unmarshal([]byte(line), &entry) == nil && entry.Message != "" {
+				fmt.Fprintln(os.Stderr, entry.Message)
 			}
 		}
 	}

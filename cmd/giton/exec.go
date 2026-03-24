@@ -39,10 +39,49 @@ func runSingleStep(args cliArgs, sha string) int {
 	remote := args.systemExplicit && getCurrentSystem() != args.system
 
 	start := time.Now()
-	rc, err := executeCmd(args, sha, remote)
-	if err != nil {
-		logErr("%v", err)
-		return 1
+	var rc int
+
+	if args.workdir != "" {
+		if remote {
+			host, err := getRemoteHost(args.system)
+			if err != nil {
+				logErr("%v", err)
+				return 1
+			}
+			rc = runSSH(host, args.workdir, args.cmd)
+		} else {
+			rc = runLocal(args.workdir, args.cmd)
+		}
+	} else if remote {
+		host, err := getRemoteHost(args.system)
+		if err != nil {
+			logErr("%v", err)
+			return 1
+		}
+		remoteDir := fmt.Sprintf("/tmp/giton-%s", shortSHA(sha))
+		defer cleanupRemote(host, remoteDir)
+
+		ensureSSHControlDir(host)
+		logMsg("Copying repo to %s...", cBold(host))
+		if err := extractRepoRemote(sha, host, remoteDir); err != nil {
+			logErr("Failed to extract repo remotely: %v", err)
+			return 1
+		}
+		rc = runSSH(host, remoteDir, args.cmd)
+	} else {
+		tmpdir, err := os.MkdirTemp("", fmt.Sprintf("giton-%s-", shortSHA(sha)))
+		if err != nil {
+			logErr("Failed to create temp dir: %v", err)
+			return 1
+		}
+		defer os.RemoveAll(tmpdir)
+
+		logMsg("Extracting repo...")
+		if err := extractRepoLocal(sha, tmpdir); err != nil {
+			logErr("Failed to extract repo: %v", err)
+			return 1
+		}
+		rc = runLocal(tmpdir, args.cmd)
 	}
 
 	elapsed := fmtDuration(time.Since(start))
@@ -56,49 +95,6 @@ func runSingleStep(args cliArgs, sha string) int {
 	}
 
 	return rc
-}
-
-// executeCmd dispatches to the right execution path (workdir, remote, or local).
-func executeCmd(args cliArgs, sha string, remote bool) (int, error) {
-	if args.workdir != "" {
-		if remote {
-			host, err := getRemoteHost(args.system)
-			if err != nil {
-				return 0, err
-			}
-			return runSSH(host, args.workdir, args.cmd), nil
-		}
-		return runLocal(args.workdir, args.cmd), nil
-	}
-
-	if remote {
-		host, err := getRemoteHost(args.system)
-		if err != nil {
-			return 0, err
-		}
-		remoteDir := fmt.Sprintf("/tmp/giton-%s", shortSHA(sha))
-
-		ensureSSHControlDir(host)
-		logMsg("Copying repo to %s...", cBold(host))
-		if err := extractRepoRemote(sha, host, remoteDir); err != nil {
-			return 0, fmt.Errorf("failed to extract repo remotely: %w", err)
-		}
-		rc := runSSH(host, remoteDir, args.cmd)
-		cleanupRemote(host, remoteDir)
-		return rc, nil
-	}
-
-	tmpdir, err := os.MkdirTemp("", fmt.Sprintf("giton-%s-", shortSHA(sha)))
-	if err != nil {
-		return 0, fmt.Errorf("failed to create temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpdir)
-
-	logMsg("Extracting repo...")
-	if err := extractRepoLocal(sha, tmpdir); err != nil {
-		return 0, fmt.Errorf("failed to extract repo: %w", err)
-	}
-	return runLocal(tmpdir, args.cmd), nil
 }
 
 // runLocal executes a command locally in the given directory.
