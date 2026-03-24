@@ -1,6 +1,6 @@
 # giton
 
-CI from your terminal. Run `nix build` on your laptop and the result shows up as a green check on the GitHub PR — same as hosted CI, but without the runner.
+Local CI for Nix projects. Run `nix build` on your laptop and the result shows up as a green check on the GitHub PR — no hosted runner needed.
 
 ```bash
 nix run github:srid/giton -- -- nix build
