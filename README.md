@@ -81,16 +81,26 @@ Each step posts its own commit status (`localci/build`, `localci/test`), so the 
 
 localci can expose CI steps as [MCP](https://modelcontextprotocol.io/) tools via process-compose's built-in MCP server. Coding agents (Claude Code, etc.) connect over stdio and invoke steps individually.
 
-```bash
-localci --mcp -f localci.json
+### Setup
+
+Add two files to your project root:
+
+**`localci.json`** — define your CI steps:
+```json
+{
+  "steps": {
+    "build": { "command": "nix build" },
+    "test": { "command": "nix run .#test", "depends_on": ["build"] }
+  }
+}
 ```
 
-Add to your MCP client config (e.g. `.claude/settings.json`):
-
+**`.mcp.json`** — register the MCP server (auto-loaded by Claude Code):
 ```json
 {
   "mcpServers": {
     "localci": {
+      "type": "stdio",
       "command": "nix",
       "args": ["run", "github:srid/localci", "--", "--mcp", "-f", "localci.json"]
     }
@@ -98,7 +108,14 @@ Add to your MCP client config (e.g. `.claude/settings.json`):
 }
 ```
 
-Each step appears as an MCP tool. Dependencies are respected — invoking "test" auto-starts "build" first. Steps can be re-invoked after fixing code.
+Then in your project's `CLAUDE.md`, tell the agent to use it:
+
+```markdown
+# CI
+Run CI via the localci MCP tools after making changes. If a step fails, fix the code and re-invoke.
+```
+
+Each step from `localci.json` appears as an MCP tool (named `mcp__localci__<step>`). Dependencies are respected — invoking a step auto-starts its dependencies first. Steps can be re-invoked after fixing code.
 
 ## Reference
 
