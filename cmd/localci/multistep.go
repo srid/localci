@@ -272,7 +272,7 @@ func buildProcessEntries(config MultiStepConfig) []processEntry {
 		}
 		for _, sys := range systems {
 			key := stepName
-			if sys != "" && len(step.Systems) > 1 {
+			if sys != "" {
 				key = fmt.Sprintf("%s (%s)", stepName, sys)
 			}
 			procs = append(procs, processEntry{step: stepName, sys: sys, key: key})
