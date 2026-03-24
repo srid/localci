@@ -1,6 +1,6 @@
 # Project
 
-Single bash script (`giton`) packaged as a Nix flake via `writeShellApplication`. Runtime deps: git, gh, nix, jq, openssh, process-compose.
+Go CLI tool packaged as a Nix flake via `buildGoModule`. Runtime deps: git, gh, nix, openssh, process-compose.
 
 # Dev
 
