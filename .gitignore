@@ -1,3 +1,4 @@
 result
 /localci
 .zig-cache/
+.claude/settings.local.json
