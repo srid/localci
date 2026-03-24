@@ -238,9 +238,7 @@ func runMultiStep(args cliArgs, sha string) int {
 			logOk("All steps passed")
 		} else {
 			logWarn("One or more steps failed (exit %d)", pcExit)
-			if !args.tui {
-				printStepReport(logDir)
-			}
+			printStepReport(logDir)
 			logInfo("Full logs: %s/", logDir)
 		}
 	}
