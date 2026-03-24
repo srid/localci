@@ -124,7 +124,10 @@ Use the localci MCP tools (mcp__localci__<step>) — never run build or test com
 4. Once green: push, then run localci MCP tools again to post GitHub statuses
 ```
 
-Each step from `localci.json` appears as an MCP tool (named `mcp__localci__<step>`). Dependencies are respected — invoking a step auto-starts its dependencies first. Steps can be re-invoked after fixing code. Step logs are exposed as MCP resources for diagnosis.
+Each step from `localci.json` appears as an MCP tool (named `mcp__localci__<step>`). Dependencies are respected — invoking a step auto-starts its dependencies first. Steps can be re-invoked after fixing code. Step logs are exposed as MCP resources (named `<step> logs`) for failure diagnosis.
+
+> [!IMPORTANT]
+> The MCP server reads `localci.json` once at startup. If you change the steps, restart your MCP client (e.g. Claude Code) to pick up the new config. Code changes are always tested fresh — each invocation resolves HEAD at runtime.
 
 ### Branch protection
 
@@ -137,8 +140,9 @@ localci protect -f localci.json
 ## Reference
 
 ```
-localci [options] -- <command...>    Single-step mode
-localci -f <config.json>             Multi-step mode
+localci [run] [options] -- <command...>    Single-step mode
+localci [run] -f <config.json>             Multi-step mode
+localci protect -f <config.json>           Set branch protection
 
 Options:
   -s, --system <system>   Nix system to run on (remote if different from current host)
@@ -147,6 +151,7 @@ Options:
   --sha <sha>             Pin to a commit SHA (skips clean-tree check)
   --tui                   Show process-compose TUI (multi-step only)
   --mcp                   Expose steps as MCP tools (multi-step only)
+  --no-signoff            Skip GitHub status posting (test before pushing)
 ```
 
 Requires `git`, [`gh`](https://cli.github.com/) (authenticated), and `nix`. Must be run inside a git repository with a GitHub remote.
