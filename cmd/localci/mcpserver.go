@@ -8,14 +8,89 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// runMCPServer starts an MCP server over stdio, exposing each step as a
-// tool and the dependency graph as a resource. Tool descriptions include
-// dependency info so agents can parallelize independent steps.
+// jobResult holds the outcome of an async step execution.
+type jobResult struct {
+	output string
+	rc     int
+}
+
+// jobTracker manages async step executions. Steps are kicked off
+// immediately and results are polled via the status tool.
+type jobTracker struct {
+	mu      sync.Mutex
+	running map[string]chan jobResult // key → result channel
+	done    map[string]jobResult     // key → completed result
+}
+
+func newJobTracker() *jobTracker {
+	return &jobTracker{
+		running: make(map[string]chan jobResult),
+		done:    make(map[string]jobResult),
+	}
+}
+
+// start launches a step asynchronously. Returns "already running" if in progress.
+func (jt *jobTracker) start(key string, run func() jobResult) string {
+	jt.mu.Lock()
+	defer jt.mu.Unlock()
+
+	if _, ok := jt.running[key]; ok {
+		return "already running"
+	}
+	if _, ok := jt.done[key]; ok {
+		return "already completed"
+	}
+
+	ch := make(chan jobResult, 1)
+	jt.running[key] = ch
+	go func() {
+		ch <- run()
+	}()
+	return "started"
+}
+
+// poll checks the status of a step. Returns (result, done).
+func (jt *jobTracker) poll(key string) (string, bool) {
+	jt.mu.Lock()
+	defer jt.mu.Unlock()
+
+	// Already completed?
+	if r, ok := jt.done[key]; ok {
+		if r.rc != 0 {
+			return fmt.Sprintf("FAILED (exit %d)\n\n%s", r.rc, r.output), true
+		}
+		return r.output, true
+	}
+
+	// Still running?
+	ch, ok := jt.running[key]
+	if !ok {
+		return "not started", true
+	}
+
+	// Check non-blocking
+	select {
+	case r := <-ch:
+		delete(jt.running, key)
+		jt.done[key] = r
+		if r.rc != 0 {
+			return fmt.Sprintf("FAILED (exit %d)\n\n%s", r.rc, r.output), true
+		}
+		return r.output, true
+	default:
+		return "running", false
+	}
+}
+
+// runMCPServer starts an MCP server over stdio. Steps are async: the step
+// tool kicks off execution and returns immediately, then agents poll the
+// status tool for results. This lets all steps run truly in parallel.
 func runMCPServer(args cliArgs) int {
 	config, err := loadConfig(args.configFile)
 	if err != nil {
@@ -25,7 +100,6 @@ func runMCPServer(args cliArgs) int {
 
 	cwd, _ := os.Getwd()
 
-	// Resolve and warm SSH connections upfront — tool handlers can't prompt.
 	if _, _, err := resolveHosts(config); err != nil {
 		logErr("%v", err)
 		return 1
@@ -39,11 +113,11 @@ func runMCPServer(args cliArgs) int {
 
 	procs := buildProcessEntries(config)
 	depMap := buildDepMap(procs, config)
+	tracker := newJobTracker()
 
 	s := server.NewMCPServer("localci", "0.1.0")
 
-	// Compute parallel peers: steps that can run concurrently (no
-	// dependency relationship in either direction).
+	// Compute parallel peers
 	allDeps := transitiveDeps(depMap)
 	peers := make(map[string][]string)
 	for _, a := range procs {
@@ -51,20 +125,19 @@ func runMCPServer(args cliArgs) int {
 			if a.key == b.key {
 				continue
 			}
-			// Can run in parallel if neither transitively depends on the other
 			if !allDeps[a.key][b.key] && !allDeps[b.key][a.key] {
 				peers[a.key] = append(peers[a.key], b.key)
 			}
 		}
 	}
 
-	// Register a tool per step×system with dependency and parallelism info.
+	// Register step tools (async — returns immediately)
 	for _, p := range procs {
 		step := config.Steps[p.step]
-		desc := fmt.Sprintf("Run CI step: %s.", step.Command)
+		desc := fmt.Sprintf("Start CI step: %s. Returns immediately — poll status tool for results.", step.Command)
 		deps := depMap[p.key]
 		if len(deps) == 0 {
-			desc += " No dependencies — can run immediately."
+			desc += " No dependencies — can start immediately."
 		} else {
 			desc += fmt.Sprintf(" Depends on: %s.", strings.Join(deps, ", "))
 		}
@@ -78,10 +151,24 @@ func runMCPServer(args cliArgs) int {
 				mcp.Description("Git ref to test (default: HEAD)"),
 			),
 		)
-		s.AddTool(tool, makeStepHandler(p, step, self, cwd))
+		s.AddTool(tool, makeAsyncStepHandler(p, step, self, cwd, tracker))
 	}
 
-	// Dependency graph resource (structured JSON for programmatic access)
+	// Status tool — poll for step completion
+	var stepNames []string
+	for _, p := range procs {
+		stepNames = append(stepNames, p.key)
+	}
+	statusTool := mcp.NewTool("status",
+		mcp.WithDescription(fmt.Sprintf("Poll step status. Returns output when done, 'running' if still in progress. Available steps: %s", strings.Join(stepNames, ", "))),
+		mcp.WithString("step",
+			mcp.Required(),
+			mcp.Description("Step name to check"),
+		),
+	)
+	s.AddTool(statusTool, makeStatusHandler(tracker))
+
+	// Dependency graph resource
 	graphResource := mcp.NewResource(
 		"localci://graph",
 		"Dependency Graph",
@@ -97,34 +184,10 @@ func runMCPServer(args cliArgs) int {
 	return 0
 }
 
-// transitiveDeps computes the transitive closure of the dependency graph.
-// Returns a map where result[a][b] == true means a transitively depends on b.
-func transitiveDeps(depMap map[string][]string) map[string]map[string]bool {
-	result := make(map[string]map[string]bool)
-	var visit func(key string) map[string]bool
-	visit = func(key string) map[string]bool {
-		if cached, ok := result[key]; ok {
-			return cached
-		}
-		deps := make(map[string]bool)
-		result[key] = deps // cache before recursing to handle cycles
-		for _, d := range depMap[key] {
-			deps[d] = true
-			for td := range visit(d) {
-				deps[td] = true
-			}
-		}
-		return deps
-	}
-	for key := range depMap {
-		visit(key)
-	}
-	return result
-}
-
-func makeStepHandler(
+func makeAsyncStepHandler(
 	p processEntry, step StepConfig,
 	self, cwd string,
+	tracker *jobTracker,
 ) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		sha := request.GetString("sha", "HEAD")
@@ -143,23 +206,64 @@ func makeStepHandler(
 		}
 		cmdParts = append(cmdParts, "-n", p.step, "--", step.Command)
 
-		cmd := exec.CommandContext(ctx, cmdParts[0], cmdParts[1:]...)
-		cmd.Dir = cwd
-		var buf bytes.Buffer
-		cmd.Stdout = &buf
-		cmd.Stderr = &buf
-		rc := exitCode(cmd.Run())
+		status := tracker.start(p.key, func() jobResult {
+			cmd := exec.Command(cmdParts[0], cmdParts[1:]...)
+			cmd.Dir = cwd
+			var buf bytes.Buffer
+			cmd.Stdout = &buf
+			cmd.Stderr = &buf
+			rc := exitCode(cmd.Run())
+			output := buf.String()
+			// Truncate passing steps; keep full output for failures
+			if rc == 0 {
+				output = truncateOutput(output, 200)
+			}
+			return jobResult{output: output, rc: rc}
+		})
 
-		output := truncateOutput(buf.String(), 200)
+		return mcp.NewToolResultText(fmt.Sprintf("%s: %s", p.key, status)), nil
+	}
+}
 
-		if rc != 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("FAILED (exit %d)\n\n%s", rc, output)), nil
+func makeStatusHandler(tracker *jobTracker) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		step, err := request.RequireString("step")
+		if err != nil {
+			return mcp.NewToolResultError("step parameter required"), nil
+		}
+
+		output, done := tracker.poll(step)
+		if !done {
+			return mcp.NewToolResultText(fmt.Sprintf("%s: running", step)), nil
 		}
 		return mcp.NewToolResultText(output), nil
 	}
 }
 
-// truncateOutput keeps the last maxLines of output, prepending a truncation notice.
+// transitiveDeps computes the transitive closure of the dependency graph.
+func transitiveDeps(depMap map[string][]string) map[string]map[string]bool {
+	result := make(map[string]map[string]bool)
+	var visit func(key string) map[string]bool
+	visit = func(key string) map[string]bool {
+		if cached, ok := result[key]; ok {
+			return cached
+		}
+		deps := make(map[string]bool)
+		result[key] = deps
+		for _, d := range depMap[key] {
+			deps[d] = true
+			for td := range visit(d) {
+				deps[td] = true
+			}
+		}
+		return deps
+	}
+	for key := range depMap {
+		visit(key)
+	}
+	return result
+}
+
 func truncateOutput(output string, maxLines int) string {
 	lines := strings.Split(output, "\n")
 	if len(lines) <= maxLines {
