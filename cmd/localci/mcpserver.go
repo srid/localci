@@ -335,7 +335,6 @@ func makeAsyncStepHandler(
 		}
 
 		short := shortSHA(sha)
-		cwd := validWorkdir()
 
 		cmdParts := []string{self, "--sha", sha}
 		if !isCommitPushed(sha) {
@@ -347,8 +346,11 @@ func makeAsyncStepHandler(
 		cmdParts = append(cmdParts, "-n", p.step, "--", step.Command)
 
 		status := tracker.start(p.key, short, func() jobResult {
+			// Resolve workdir at execution time, not invocation time —
+			// queued steps may wait minutes for deps, and the original
+			// cwd could be deleted by nix build in the meantime.
 			cmd := exec.Command(cmdParts[0], cmdParts[1:]...)
-			cmd.Dir = cwd
+			cmd.Dir = validWorkdir()
 			var buf bytes.Buffer
 			cmd.Stdout = &buf
 			cmd.Stderr = &buf
