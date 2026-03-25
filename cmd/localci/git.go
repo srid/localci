@@ -38,6 +38,32 @@ func resolveRef(ref string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// gitRepoRoot returns the top-level directory of the git repository.
+func gitRepoRoot() (string, error) {
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// validWorkdir returns cwd if it still exists, otherwise falls back
+// to the git repo root. Prevents "cannot get current path" errors
+// when cwd is deleted during long-running async handlers.
+func validWorkdir() string {
+	cwd, err := os.Getwd()
+	if err == nil {
+		if _, statErr := os.Stat(cwd); statErr == nil {
+			return cwd
+		}
+	}
+	root, err := gitRepoRoot()
+	if err == nil {
+		return root
+	}
+	return "."
+}
+
 // isCommitPushed checks if a SHA exists on any remote branch.
 func isCommitPushed(sha string) bool {
 	out, err := exec.Command("git", "branch", "-r", "--contains", sha).Output()

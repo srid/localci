@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -21,11 +20,11 @@ type jobResult struct {
 }
 
 // jobTracker manages async step executions. Steps are kicked off
-// immediately and results are polled via the status tool.
+// immediately and results are polled via the status-all tool.
 type jobTracker struct {
 	mu      sync.Mutex
-	running map[string]chan jobResult // key → result channel
-	done    map[string]jobResult     // key → completed result
+	running map[string]chan jobResult
+	done    map[string]jobResult
 }
 
 func newJobTracker() *jobTracker {
@@ -35,7 +34,6 @@ func newJobTracker() *jobTracker {
 	}
 }
 
-// start launches a step asynchronously. Returns "already running" if in progress.
 func (jt *jobTracker) start(key string, run func() jobResult) string {
 	jt.mu.Lock()
 	defer jt.mu.Unlock()
@@ -55,50 +53,73 @@ func (jt *jobTracker) start(key string, run func() jobResult) string {
 	return "started"
 }
 
-// poll checks the status of a step. Returns (result, done).
-func (jt *jobTracker) poll(key string) (string, bool) {
+// pollAll returns the status of all tracked steps, draining any
+// completed results. Returns a summary string and per-step details.
+func (jt *jobTracker) pollAll(keys []string) string {
 	jt.mu.Lock()
 	defer jt.mu.Unlock()
 
-	// Already completed?
-	if r, ok := jt.done[key]; ok {
-		if r.rc != 0 {
-			return fmt.Sprintf("FAILED (exit %d)\n\n%s", r.rc, r.output), true
+	// Drain completed channels
+	for key, ch := range jt.running {
+		select {
+		case r := <-ch:
+			delete(jt.running, key)
+			jt.done[key] = r
+		default:
 		}
-		return r.output, true
 	}
 
-	// Still running?
-	ch, ok := jt.running[key]
-	if !ok {
-		return "not started", true
+	var lines []string
+	allDone := true
+	anyFailed := false
+
+	for _, key := range keys {
+		if r, ok := jt.done[key]; ok {
+			if r.rc != 0 {
+				anyFailed = true
+				lines = append(lines, fmt.Sprintf("✗ %s: FAILED (exit %d)", key, r.rc))
+			} else {
+				lines = append(lines, fmt.Sprintf("✓ %s: passed", key))
+			}
+		} else if _, ok := jt.running[key]; ok {
+			allDone = false
+			lines = append(lines, fmt.Sprintf("● %s: running", key))
+		} else {
+			allDone = false
+			lines = append(lines, fmt.Sprintf("· %s: not started", key))
+		}
 	}
 
-	// Check non-blocking
-	select {
-	case r := <-ch:
-		delete(jt.running, key)
-		jt.done[key] = r
-		if r.rc != 0 {
-			return fmt.Sprintf("FAILED (exit %d)\n\n%s", r.rc, r.output), true
+	// Summary line
+	if allDone {
+		if anyFailed {
+			lines = append([]string{"STATUS: DONE (some steps failed)\n"}, lines...)
+		} else {
+			lines = append([]string{"STATUS: ALL PASSED\n"}, lines...)
 		}
-		return r.output, true
-	default:
-		return "running", false
+	} else {
+		lines = append([]string{"STATUS: IN PROGRESS\n"}, lines...)
 	}
+
+	// Append full output for completed failed steps
+	for _, key := range keys {
+		if r, ok := jt.done[key]; ok && r.rc != 0 {
+			lines = append(lines, fmt.Sprintf("\n--- %s output ---\n%s", key, r.output))
+		}
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // runMCPServer starts an MCP server over stdio. Steps are async: the step
-// tool kicks off execution and returns immediately, then agents poll the
-// status tool for results. This lets all steps run truly in parallel.
+// tool kicks off execution and returns immediately, then agents poll
+// status-all for batch results.
 func runMCPServer(args cliArgs) int {
 	config, err := loadConfig(args.configFile)
 	if err != nil {
 		logErr("%v", err)
 		return 1
 	}
-
-	cwd, _ := os.Getwd()
 
 	if _, _, err := resolveHosts(config); err != nil {
 		logErr("%v", err)
@@ -134,7 +155,7 @@ func runMCPServer(args cliArgs) int {
 	// Register step tools (async — returns immediately)
 	for _, p := range procs {
 		step := config.Steps[p.step]
-		desc := fmt.Sprintf("Start CI step: %s. Returns immediately — poll status tool for results.", step.Command)
+		desc := fmt.Sprintf("Start CI step: %s. Returns immediately — poll status-all for results.", step.Command)
 		deps := depMap[p.key]
 		if len(deps) == 0 {
 			desc += " No dependencies — can start immediately."
@@ -151,22 +172,20 @@ func runMCPServer(args cliArgs) int {
 				mcp.Description("Git ref to test (default: HEAD)"),
 			),
 		)
-		s.AddTool(tool, makeAsyncStepHandler(p, step, self, cwd, tracker))
+		s.AddTool(tool, makeAsyncStepHandler(p, step, self, tracker))
 	}
 
-	// Status tool — poll for step completion
-	var stepNames []string
+	// status-all tool — batch poll all steps in one call
+	var stepKeys []string
 	for _, p := range procs {
-		stepNames = append(stepNames, p.key)
+		stepKeys = append(stepKeys, p.key)
 	}
-	statusTool := mcp.NewTool("status",
-		mcp.WithDescription(fmt.Sprintf("Poll step status. Returns output when done, 'running' if still in progress. Available steps: %s", strings.Join(stepNames, ", "))),
-		mcp.WithString("step",
-			mcp.Required(),
-			mcp.Description("Step name to check"),
-		),
+	statusAllTool := mcp.NewTool("status-all",
+		mcp.WithDescription("Poll all step statuses in one call. Returns summary with pass/fail/running for each step, plus full logs for failures. Call this instead of polling individual steps."),
 	)
-	s.AddTool(statusTool, makeStatusHandler(tracker))
+	s.AddTool(statusAllTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText(tracker.pollAll(stepKeys)), nil
+	})
 
 	// Dependency graph resource
 	graphResource := mcp.NewResource(
@@ -186,7 +205,7 @@ func runMCPServer(args cliArgs) int {
 
 func makeAsyncStepHandler(
 	p processEntry, step StepConfig,
-	self, cwd string,
+	self string,
 	tracker *jobTracker,
 ) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -196,6 +215,9 @@ func makeAsyncStepHandler(
 		if err == nil {
 			sha = resolved
 		}
+
+		// Validate workdir each invocation — prevents stale cwd errors
+		cwd := validWorkdir()
 
 		cmdParts := []string{self, "--sha", sha}
 		if !isCommitPushed(sha) {
@@ -214,7 +236,6 @@ func makeAsyncStepHandler(
 			cmd.Stderr = &buf
 			rc := exitCode(cmd.Run())
 			output := buf.String()
-			// Truncate passing steps; keep full output for failures
 			if rc == 0 {
 				output = truncateOutput(output, 200)
 			}
@@ -222,21 +243,6 @@ func makeAsyncStepHandler(
 		})
 
 		return mcp.NewToolResultText(fmt.Sprintf("%s: %s", p.key, status)), nil
-	}
-}
-
-func makeStatusHandler(tracker *jobTracker) server.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		step, err := request.RequireString("step")
-		if err != nil {
-			return mcp.NewToolResultError("step parameter required"), nil
-		}
-
-		output, done := tracker.poll(step)
-		if !done {
-			return mcp.NewToolResultText(fmt.Sprintf("%s: running", step)), nil
-		}
-		return mcp.NewToolResultText(output), nil
 	}
 }
 
