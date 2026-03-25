@@ -15,6 +15,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/mattn/go-isatty"
 	"github.com/rodaine/table"
+	"golang.org/x/term"
 )
 
 // StepConfig represents a step in the multi-step config file (localci.json).
@@ -190,35 +191,66 @@ func colorFor(name string) *color.Color {
 	return color.New(palette[int(h.Sum32())%len(palette)])
 }
 
-// stepPrefix builds a colored prefix like "[build]" or "[build] [x86_64-linux]".
-func stepPrefix(p processEntry) string {
-	stepC := colorFor(p.step)
-	if p.sys == "" {
-		return stepC.Sprintf("[%s]", p.step)
-	}
-	sysC := colorFor(p.sys)
-	return stepC.Sprintf("[%s]", p.step) + " " + sysC.Sprintf("[%s]", p.sys)
+// prefixFormatter builds aligned colored prefixes for a set of process entries.
+// Each step name and system name is padded to the max width in the set, so
+// output lines from different steps form neat columns.
+type prefixFormatter struct {
+	maxStep int
+	maxSys  int
 }
 
-// statusBar renders a one-line summary of all step states.
-// Uses ANSI escapes to pin it at the bottom of the terminal.
+func newPrefixFormatter(procs []processEntry) prefixFormatter {
+	var pf prefixFormatter
+	for _, p := range procs {
+		if len(p.step) > pf.maxStep {
+			pf.maxStep = len(p.step)
+		}
+		if len(p.sys) > pf.maxSys {
+			pf.maxSys = len(p.sys)
+		}
+	}
+	return pf
+}
+
+func (pf prefixFormatter) format(p processEntry) string {
+	stepC := colorFor(p.step)
+	padded := fmt.Sprintf("%-*s", pf.maxStep, p.step)
+	if pf.maxSys == 0 {
+		return stepC.Sprintf("[%s]", padded)
+	}
+	sysC := colorFor(p.sys)
+	sysPadded := fmt.Sprintf("%-*s", pf.maxSys, p.sys)
+	return stepC.Sprintf("[%s]", padded) + " " + sysC.Sprintf("[%s]", sysPadded)
+}
+
+// statusBar pins a one-line step summary at the bottom of the terminal
+// using ANSI scroll regions. The scroll region excludes the last row,
+// so normal output scrolls without overwriting the status line.
 type statusBar struct {
 	procs  []processEntry
 	state  map[string]stepState
-	isTTY  bool
+	height int  // terminal height; 0 = not a TTY
 }
 
 func newStatusBar(procs []processEntry, state map[string]stepState) *statusBar {
-	return &statusBar{
-		procs: procs,
-		state: state,
-		isTTY: isatty.IsTerminal(os.Stderr.Fd()),
+	sb := &statusBar{procs: procs, state: state}
+	if !isatty.IsTerminal(os.Stderr.Fd()) {
+		return sb
 	}
+	_, h, err := term.GetSize(int(os.Stderr.Fd()))
+	if err != nil || h < 3 {
+		return sb
+	}
+	sb.height = h
+	// Reserve last row: set scroll region to rows 1..(height-1)
+	fmt.Fprintf(os.Stderr, "\033[1;%dr", sb.height-1)
+	sb.render()
+	return sb
 }
 
-// render redraws the status bar. Must be called with the DAG mutex held.
+// render redraws the status bar on the last row. Must be called with mu held.
 func (sb *statusBar) render() {
-	if !sb.isTTY {
+	if sb.height == 0 {
 		return
 	}
 	var parts []string
@@ -242,16 +274,17 @@ func (sb *statusBar) render() {
 		}
 		parts = append(parts, fmt.Sprintf("%s %s", symbol, label))
 	}
-	// Save cursor, move to bottom, clear line, print, restore cursor
-	fmt.Fprintf(os.Stderr, "\033[s\033[999;1H\033[2K%s\033[u", strings.Join(parts, "  "))
+	// Save cursor, move to last row, clear it, draw status, restore cursor
+	fmt.Fprintf(os.Stderr, "\033[s\033[%d;1H\033[2K%s\033[u", sb.height, strings.Join(parts, "  "))
 }
 
-// clear removes the status bar from the terminal.
+// clear removes the status bar and resets the scroll region.
 func (sb *statusBar) clear() {
-	if !sb.isTTY {
+	if sb.height == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "\033[s\033[999;1H\033[2K\033[u")
+	// Reset scroll region to full terminal, clear the status row
+	fmt.Fprintf(os.Stderr, "\033[r\033[%d;1H\033[2K", sb.height)
 }
 
 // runDAG executes steps respecting dependencies. Independent steps run
@@ -272,6 +305,7 @@ func runDAG(
 	}
 
 	sb := newStatusBar(procs, state)
+	pf := newPrefixFormatter(procs)
 
 	var wg sync.WaitGroup
 	hasFailure := false
@@ -306,7 +340,7 @@ func runDAG(
 
 			step := config.Steps[p.step]
 			cmdParts := buildStepCmd(self, sha, p, step, workdirMap, noSignoff)
-			prefix := stepPrefix(p)
+			prefix := pf.format(p)
 
 			// Use os.Pipe so the kernel merges stdout+stderr atomically
 			// (io.Pipe with two Go copier goroutines can interleave bytes)
@@ -345,7 +379,6 @@ func runDAG(
 				line := scanner.Text()
 				mu.Lock()
 				fmt.Fprintf(os.Stderr, "%s %s\n", prefix, line)
-				sb.render()
 				mu.Unlock()
 				if logF != nil {
 					fmt.Fprintln(logF, line)
