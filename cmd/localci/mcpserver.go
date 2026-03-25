@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -92,19 +93,54 @@ func makeRunAllHandler(self, cwd, configFile string, noSignoff bool) server.Tool
 			cmdParts = append(cmdParts, "--no-signoff")
 		}
 
+		// Use os.Pipe so we can stream progress notifications to the client
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			return mcp.NewToolResultError("failed to create pipe"), nil
+		}
+
 		cmd := exec.CommandContext(ctx, cmdParts[0], cmdParts[1:]...)
 		cmd.Dir = cwd
-		var buf bytes.Buffer
-		cmd.Stdout = &buf
-		cmd.Stderr = &buf
-		rc := exitCode(cmd.Run())
+		cmd.Stdout = pw
+		cmd.Stderr = pw
 
-		output := truncateOutput(buf.String(), 200)
+		if err := cmd.Start(); err != nil {
+			pw.Close()
+			pr.Close()
+			return mcp.NewToolResultError(fmt.Sprintf("failed to start: %v", err)), nil
+		}
+		pw.Close()
+
+		srv := server.ServerFromContext(ctx)
+		var output strings.Builder
+		scanner := bufio.NewScanner(pr)
+		scanner.Buffer(make([]byte, 0, 256*1024), 256*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			output.WriteString(line)
+			output.WriteByte('\n')
+
+			// Send progress notifications for key events
+			if srv != nil && (strings.Contains(line, "passed") ||
+				strings.Contains(line, "failed") ||
+				strings.Contains(line, "Running") ||
+				strings.Contains(line, "Skipped") ||
+				strings.Contains(line, "All steps")) {
+				srv.SendNotificationToClient(ctx, "notifications/message", map[string]any{
+					"level": "info",
+					"data":  line,
+				})
+			}
+		}
+		pr.Close()
+
+		rc := exitCode(cmd.Wait())
+		result := truncateOutput(output.String(), 200)
 
 		if rc != 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("FAILED (exit %d)\n\n%s", rc, output)), nil
+			return mcp.NewToolResultText(fmt.Sprintf("FAILED (exit %d)\n\n%s", rc, result)), nil
 		}
-		return mcp.NewToolResultText(output), nil
+		return mcp.NewToolResultText(result), nil
 	}
 }
 
