@@ -136,17 +136,17 @@ Or use stdio mode for auto-start:
 Then in your project's `CLAUDE.md`, tell the agent how to use it:
 
 ```markdown
-# Dev workflow
+# CI workflow
 
-Use the localci MCP tools (mcp__localci__<step>) — never run build or test commands directly.
+To run CI, call all localci step tools in parallel (they handle dependency
+ordering internally — queued steps wait for deps automatically). Then poll
+`status-all` until complete. Do NOT call `status-all` before starting steps.
 
-1. Make changes, commit
-2. Run localci MCP tools to verify
-3. If failures: fix, amend commit, re-run MCP tools
-4. Once green: push, then run localci MCP tools again to post GitHub statuses
+If a step fails, fix the issue, commit, and re-call the step tools — they
+auto-detect the new SHA and re-run.
 ```
 
-Each CI recipe appears as an MCP tool. A `status-all` tool polls all steps at once. The `localci://graph` resource exposes the dependency graph so agents can parallelize independent steps.
+Each CI recipe appears as an MCP tool. A `status-all` tool polls all steps at once — showing `●` running, `◌` queued (waiting for deps), `✓` passed, `✗` failed. Steps track which SHA they ran against and automatically re-run when the commit changes.
 
 ### Branch protection
 
