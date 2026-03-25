@@ -260,7 +260,7 @@ func (sb *statusBar) render() {
 		case stateWaiting:
 			symbol = cDim("·")
 		case stateRunning:
-			symbol = cYellow("▶")
+			symbol = cYellow("●")
 		case stateDone:
 			symbol = cGreen("✓")
 		case stateFailed:
