@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
+	"hash/fnv"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/fatih/color"
+	"github.com/mattn/go-isatty"
 	"github.com/rodaine/table"
 )
 
@@ -170,25 +171,98 @@ const (
 	stateSkipped
 )
 
-// prefixColors cycles through distinct colors for step log prefixes.
-var prefixColors = []*color.Color{
-	color.New(color.FgCyan),
-	color.New(color.FgMagenta),
-	color.New(color.FgBlue),
-	color.New(color.FgYellow),
-	color.New(color.FgGreen),
-	color.New(color.FgRed),
+// palette of distinct colors for step/system prefixes.
+var palette = []color.Attribute{
+	color.FgCyan,
+	color.FgMagenta,
+	color.FgBlue,
+	color.FgYellow,
+	color.FgGreen,
+	color.FgHiCyan,
+	color.FgHiMagenta,
+	color.FgHiBlue,
+}
+
+// colorFor returns a deterministic color for a name (consistent across runs).
+func colorFor(name string) *color.Color {
+	h := fnv.New32a()
+	h.Write([]byte(name))
+	return color.New(palette[int(h.Sum32())%len(palette)])
+}
+
+// stepPrefix builds a colored prefix like "[build]" or "[build] [x86_64-linux]".
+func stepPrefix(p processEntry) string {
+	stepC := colorFor(p.step)
+	if p.sys == "" {
+		return stepC.Sprintf("[%s]", p.step)
+	}
+	sysC := colorFor(p.sys)
+	return stepC.Sprintf("[%s]", p.step) + " " + sysC.Sprintf("[%s]", p.sys)
+}
+
+// statusBar renders a one-line summary of all step states.
+// Uses ANSI escapes to pin it at the bottom of the terminal.
+type statusBar struct {
+	procs  []processEntry
+	state  map[string]stepState
+	isTTY  bool
+}
+
+func newStatusBar(procs []processEntry, state map[string]stepState) *statusBar {
+	return &statusBar{
+		procs: procs,
+		state: state,
+		isTTY: isatty.IsTerminal(os.Stderr.Fd()),
+	}
+}
+
+// render redraws the status bar. Must be called with the DAG mutex held.
+func (sb *statusBar) render() {
+	if !sb.isTTY {
+		return
+	}
+	var parts []string
+	for _, p := range sb.procs {
+		var symbol string
+		switch sb.state[p.key] {
+		case stateWaiting:
+			symbol = cDim("·")
+		case stateRunning:
+			symbol = cYellow("▶")
+		case stateDone:
+			symbol = cGreen("✓")
+		case stateFailed:
+			symbol = cErr("✗")
+		case stateSkipped:
+			symbol = cDim("⊘")
+		}
+		label := p.step
+		if p.sys != "" {
+			label += "/" + p.sys
+		}
+		parts = append(parts, fmt.Sprintf("%s %s", symbol, label))
+	}
+	// Save cursor, move to bottom, clear line, print, restore cursor
+	fmt.Fprintf(os.Stderr, "\033[s\033[999;1H\033[2K%s\033[u", strings.Join(parts, "  "))
+}
+
+// clear removes the status bar from the terminal.
+func (sb *statusBar) clear() {
+	if !sb.isTTY {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\033[s\033[999;1H\033[2K\033[u")
 }
 
 // runDAG executes steps respecting dependencies. Independent steps run
 // concurrently via goroutines. If a step fails, its dependents are skipped.
+// Output is streamed line-by-line with colored [step] [system] prefixes.
 func runDAG(
 	procs []processEntry, config MultiStepConfig,
 	sha, self, cwd, logDir string,
 	hostMap, workdirMap map[string]string,
 	noSignoff bool,
 ) int {
-	// Build dependency map: key → list of dependency keys
 	depMap := buildDepMap(procs, config)
 
 	var mu sync.Mutex
@@ -197,9 +271,10 @@ func runDAG(
 		state[p.key] = stateWaiting
 	}
 
+	sb := newStatusBar(procs, state)
+
 	var wg sync.WaitGroup
 	hasFailure := false
-	launched := 0
 
 	// tryLaunch checks if a step's dependencies are met and launches it.
 	// Must be called with mu held.
@@ -212,7 +287,7 @@ func runDAG(
 			switch state[dep] {
 			case stateFailed, stateSkipped:
 				state[p.key] = stateSkipped
-				logWarn("Skipped %s (dependency failed)", cBold(p.key))
+				sb.render()
 				// Cascade: skip anything that depends on this
 				for _, pp := range procs {
 					tryLaunch(pp)
@@ -224,48 +299,61 @@ func runDAG(
 		}
 
 		state[p.key] = stateRunning
-		launched++
+		sb.render()
 		wg.Add(1)
-		go func(p processEntry, colorIdx int) {
+		go func(p processEntry) {
 			defer wg.Done()
 
 			step := config.Steps[p.step]
 			cmdParts := buildStepCmd(self, sha, p, step, workdirMap, noSignoff)
+			prefix := stepPrefix(p)
 
-			prefix := prefixColors[colorIdx%len(prefixColors)].Sprintf("[%s]", p.key)
-			logMsg("Running %s...", cBold(p.key))
+			// Use os.Pipe so the kernel merges stdout+stderr atomically
+			// (io.Pipe with two Go copier goroutines can interleave bytes)
+			pr, pw, err := os.Pipe()
+			if err != nil {
+				mu.Lock()
+				state[p.key] = stateFailed
+				hasFailure = true
+				mu.Unlock()
+				return
+			}
 
 			cmd := exec.Command(cmdParts[0], cmdParts[1:]...)
 			cmd.Dir = cwd
-
-			// Pipe stdout+stderr for real-time line streaming
-			pr, pw := io.Pipe()
 			cmd.Stdout = pw
 			cmd.Stderr = pw
+
+			if err := cmd.Start(); err != nil {
+				pw.Close()
+				pr.Close()
+				mu.Lock()
+				state[p.key] = stateFailed
+				hasFailure = true
+				mu.Unlock()
+				return
+			}
+			// Close write end in parent so reads get EOF when child exits
+			pw.Close()
 
 			logFile := filepath.Join(logDir, sanitizeLogName(p.key)+".log")
 			logF, _ := os.Create(logFile)
 
-			// Stream lines to stderr with colored prefix and to log file
-			var scanDone sync.WaitGroup
-			scanDone.Add(1)
-			go func() {
-				defer scanDone.Done()
-				scanner := bufio.NewScanner(pr)
-				for scanner.Scan() {
-					line := scanner.Text()
-					mu.Lock()
-					fmt.Fprintf(os.Stderr, "%s %s\n", prefix, line)
-					mu.Unlock()
-					if logF != nil {
-						fmt.Fprintln(logF, line)
-					}
+			scanner := bufio.NewScanner(pr)
+			scanner.Buffer(make([]byte, 0, 256*1024), 256*1024)
+			for scanner.Scan() {
+				line := scanner.Text()
+				mu.Lock()
+				fmt.Fprintf(os.Stderr, "%s %s\n", prefix, line)
+				sb.render()
+				mu.Unlock()
+				if logF != nil {
+					fmt.Fprintln(logF, line)
 				}
-			}()
+			}
+			pr.Close()
 
-			rc := exitCode(cmd.Run())
-			pw.Close()
-			scanDone.Wait()
+			rc := exitCode(cmd.Wait())
 			if logF != nil {
 				logF.Close()
 			}
@@ -273,18 +361,16 @@ func runDAG(
 			mu.Lock()
 			if rc == 0 {
 				state[p.key] = stateDone
-				logOk("%s passed", cBold(p.key))
 			} else {
 				state[p.key] = stateFailed
 				hasFailure = true
-				logWarn("%s failed (exit %d)", cBold(p.key), rc)
 			}
-			// Try launching dependents
+			sb.render()
 			for _, pp := range procs {
 				tryLaunch(pp)
 			}
 			mu.Unlock()
-		}(p, launched)
+		}(p)
 	}
 
 	mu.Lock()
@@ -294,6 +380,7 @@ func runDAG(
 	mu.Unlock()
 
 	wg.Wait()
+	sb.clear()
 
 	if hasFailure {
 		return 1
