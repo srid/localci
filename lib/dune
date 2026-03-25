@@ -1,0 +1,3 @@
+(library
+ (name localci)
+ (libraries unix yojson))

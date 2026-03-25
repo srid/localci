@@ -11,42 +11,45 @@
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       perSystem = { pkgs, ... }:
         let
-          localci = pkgs.buildGoModule {
+          localci = pkgs.ocamlPackages.buildDunePackage {
             pname = "localci";
             version = "0.1.0";
             src = ./.;
-            vendorHash = "sha256-6B/Q8Byws0F6zMBbrvPrL7TcjVSAXCXnEIz5ODTmyQ4=";
-            subPackages = [ "cmd/localci" ];
+            buildInputs = with pkgs.ocamlPackages; [ cmdliner yojson ];
             meta.description = "Local CI tool — run commands on Nix platforms with GitHub status reporting";
           };
-          testFiles = pkgs.runCommand "localci-test-files" { } ''
-            mkdir -p $out
-            cp ${./test/run.sh} $out/run.sh
-            cp ${./test/test_single_step.sh} $out/test_single_step.sh
-            cp ${./test/test_github_status.sh} $out/test_github_status.sh
-            cp ${./test/test_sha_pinning.sh} $out/test_sha_pinning.sh
-            cp ${./test/test_multi_step.sh} $out/test_multi_step.sh
-          '';
         in
         {
           # Wrapped binary with runtime deps in PATH
-          packages.default = localci.overrideAttrs (old: {
-            nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.makeWrapper ];
-            postInstall = ''
+          packages.default = pkgs.symlinkJoin {
+            name = "localci";
+            paths = [ localci ];
+            buildInputs = [ pkgs.makeWrapper ];
+            postBuild = ''
               wrapProgram $out/bin/localci \
                 --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git pkgs.gh pkgs.nix pkgs.openssh pkgs.process-compose ]}
             '';
-          });
-
-          # Test runner (uses unwrapped binary so mock gh takes precedence in PATH)
-          packages.test = pkgs.writeShellApplication {
-            name = "localci-test";
-            runtimeInputs = [ pkgs.git pkgs.nix pkgs.process-compose ];
-            text = ''
-              export LOCALCI="${localci}/bin/localci"
-              exec bash ${testFiles}/run.sh "$@"
-            '';
           };
+
+          # Test runner (unwrapped binary so mock gh takes precedence in PATH)
+          packages.test =
+            let
+              tested = localci.overrideAttrs (old: {
+                doCheck = true;
+                nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [
+                  pkgs.git
+                  pkgs.process-compose
+                  pkgs.nix
+                ];
+                preCheck = ''
+                  export HOME=$(mktemp -d)
+                '';
+              });
+            in
+            pkgs.writeShellApplication {
+              name = "localci-test";
+              text = ''echo "All tests passed (${tested})"'';
+            };
         };
     };
 }
