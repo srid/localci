@@ -51,17 +51,31 @@ func (jt *jobTracker) start(key, sha string, run func() jobResult) string {
 	jt.mu.Lock()
 	defer jt.mu.Unlock()
 
-	if _, ok := jt.running[key]; ok {
-		return "already running"
+	// If a previous run completed but wasn't polled yet, drain it now.
+	// Without this, re-starting after a completed run (without polling
+	// in between) would incorrectly report "already running".
+	if ch, inRunning := jt.running[key]; inRunning {
+		select {
+		case r := <-ch:
+			delete(jt.running, key)
+			delete(jt.queued, key)
+			jt.complete(key, r)
+		default:
+			return "already running"
+		}
 	}
-	// If SHA changed, reset so the step re-runs against the new commit
-	if oldSHA, ok := jt.shas[key]; ok && oldSHA != sha {
-		delete(jt.done, key)
-		jt.doneCh[key] = make(chan struct{})
-	} else if prev, ok := jt.done[key]; ok && prev.rc == 0 {
+
+	prev, wasDone := jt.done[key]
+	oldSHA := jt.shas[key]
+	shaChanged := oldSHA != "" && oldSHA != sha
+
+	// Decide whether to re-run or skip
+	if wasDone && !shaChanged && prev.rc == 0 {
 		return "already passed"
-	} else if _, ok := jt.done[key]; ok {
-		// Allow re-running failed steps
+	}
+
+	// Reset previous result (SHA changed or step failed) so it can re-run
+	if wasDone {
 		delete(jt.done, key)
 		jt.doneCh[key] = make(chan struct{})
 	}

@@ -296,20 +296,22 @@ func runDAG(
 		doneCh[p.key] = make(chan struct{})
 	}
 
+	// Build prefix formatter once — shared by all goroutines for aligned output
+	pf := newPrefixFormatter(procs)
+
 	var wg sync.WaitGroup
 	for _, p := range procs {
 		wg.Add(1)
 		go func(p processEntry) {
 			defer wg.Done()
 
-			// Wait for dependencies
+			// Wait for dependencies to pass before running
 			for _, dep := range depMap[p.key] {
 				<-doneCh[dep]
 				mu.Lock()
 				depRC := results[dep]
 				mu.Unlock()
 				if depRC != 0 {
-					// Dependency failed — skip
 					mu.Lock()
 					results[p.key] = 1
 					mu.Unlock()
@@ -321,6 +323,7 @@ func runDAG(
 
 			tobs.update(p.key, stateRunning)
 
+			// Build the self-invocation command for this step
 			step := config.Steps[p.step]
 			cmdParts := []string{self, "--sha", sha}
 			if noSignoff {
@@ -339,8 +342,6 @@ func runDAG(
 			cmd := exec.Command(cmdParts[0], cmdParts[1:]...)
 			cmd.Dir = cwd
 
-			// Capture output for log file and stream with prefix
-			pf := newPrefixFormatter(procs)
 			prefix := pf.format(p)
 
 			pr, pw, _ := os.Pipe()
