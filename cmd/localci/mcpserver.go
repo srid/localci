@@ -72,6 +72,11 @@ func (jt *jobTracker) pollAll(keys []string) string {
 		}
 	}
 
+	// If nothing has been started, nudge the agent
+	if len(jt.running) == 0 && len(jt.done) == 0 {
+		return "NO STEPS STARTED — call individual step tools first, then poll status-all"
+	}
+
 	// Collect SHA (all steps should use the same one, pick first available)
 	var sha string
 	for _, key := range keys {
